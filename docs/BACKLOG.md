@@ -151,21 +151,81 @@ components/tab5_board/
   src/rtc_rx8130.cpp                 ✅ BCD, VLF validity, STOP-guarded write, own
                                         days_from_civil (no timegm dependency)
 
-components/dashboard_core/
+components/dashboard_core/          ✅ COMPLETE
   CMakeLists.txt                     ✅
   include/dashboard/json_compat.hpp  ✅ cJSON path shim for firmware vs host build
   include/dashboard/fixed_string.hpp ✅ FixedString<N>, no heap
-  include/dashboard/semver.hpp       ✅
-  src/semver.cpp                     ✅ strict parse, release > prerelease, isUpgrade()
+  include/dashboard/semver.hpp/.cpp  ✅ strict parse, release > prerelease, isUpgrade()
+  include/dashboard/time_utils.*     ✅ ESP-free. ISO-8601 parse, British date/time formatting,
+                                        countdown, relative age, inTimeWindow (midnight wrap),
+                                        own days_from_civil (no timegm/mktime dependency)
+  include/dashboard/json_util.*      ✅ defensive cJSON accessors — every one tolerates a
+                                        missing/null/wrong-typed field; RAII Doc using
+                                        cJSON_ParseWithLength (HTTP bodies are not NUL-terminated)
+  include/dashboard/plugin.hpp       ✅ DataState, DashboardPlugin, PageHost. Threading contract
+                                        documented at the top — read this first
+  include/dashboard/worker.*         ✅ one FreeRTOS task + bounded queue (depth 2, so refresh
+                                        posts coalesce); heap-allocated std::function behind a
+                                        pointer because FreeRTOS byte-copies queue items;
+                                        synchronous stop()
+  include/dashboard/theme.*          ✅ dark palette (hex literals live here and nowhere else),
+                                        font accessors that degrade if a Kconfig font is absent,
+                                        spacing scale, state->colour mapping, card/row/label/dot
+                                        builders, applyHeroScale, dark default LVGL theme
+  include/dashboard/page_scaffold.*  ✅ header (dot/title/clock/offline) + body + footer
+  include/dashboard/plugin_base.*    ✅ THE important one. Implements the threading contract:
+                                        refresh() only posts; fetch() on worker; updateUi() on
+                                        LVGL via dirty flag; Loading/Ok/Stale/Error machine;
+                                        auto-Stale on age; footer text; two separate mutexes so
+                                        setError() inside a fetch() failure cannot deadlock
+  include/dashboard/gesture_detector.* ✅ polls the indev on a 30 ms lv_timer instead of using
+                                        LV_EVENT_GESTURE (which widgets swallow); swipe
+                                        L/R/U/D + long press; integer dominance test;
+                                        lv_indev_reset() so a swipe off a button doesn't click it
+  include/dashboard/page_manager.*   ✅ pages built once and toggled hidden (leak-proof by
+                                        construction); ONE lv_timer drives every plugin's tick()
+                                        and refresh scheduling; staggered first refresh; overlay
+                                        (Settings) with restore; order/enable; thread-safe
+                                        setOnline(); lv_tick_elaps everywhere (49-day wrap)
+
+plugins/clock/                      ✅ COMPLETE
+  CMakeLists.txt                     ✅
+  include/plugins/clock_plugin.hpp   ✅
+  src/clock_plugin.cpp               ✅ two faces (minimal / split-flap cards), 24 h, British
+                                        long date, configurable seconds, burn-in nudge,
+                                        requiresNetwork()=false, only redraws when the displayed
+                                        value actually changes
 ```
 
-Directory tree for everything else is already created (32 directories), just empty.
+### Design changes made during implementation — do not re-litigate
+
+1. **`tab5_board::Backlight` no longer owns the dim *schedule*.** The midnight-wrapping window
+   predicate was needed for the TfL commute windows too, and `tab5_board` cannot depend on
+   `dashboard_core` without a circular component dependency. So the single definition is
+   `dashboard::timeutil::inTimeWindow()`, and `Backlight` now exposes
+   `configure(day, night)` + `applyNightMode(bool)`. The board owns *how bright*; the app owns
+   *when*. `inDimWindow()` and `scheduledPercent()` are gone.
+2. **The page indicator is ONE widget on `lv_layer_top()`, not one per page.** `PageManager` only
+   holds a `DashboardPlugin*` and cannot reach a plugin's footer. `PageScaffold::indicatorSlot()`
+   and `footer_right_` were removed rather than widening the plugin interface.
+3. **The header clock is rendered by `PluginBase`, not `PageManager`,** for the same reason.
+   Plugins opt out with `showHeaderClock()` — the clock page does.
+4. **`theme::applyHeroScale()` uses a percentage pivot** (`lv_pct(50)`), not half the measured
+   width: it is normally called from `buildBody()` before layout has run, where
+   `lv_obj_get_width()` returns 0 and the pivot would silently land on the corner.
+5. **`cfg::kClockRefreshMs` is 60 s, not 1 h.** It only controls how often the clock re-checks
+   whether the system time has become valid, so "waiting for time sync" clears promptly.
+6. **A plugin with `refreshIntervalMs() == 0` is never scheduled at all** — including the
+   one-off first refresh — so placeholder pages stay `Idle` instead of reporting
+   "Updated just now".
 
 ---
 
 ## 4. Next actions, in order
 
-### 4.1 Finish `components/dashboard_core` ← **resume here**
+### 4.1 `components/dashboard_core` — ✅ **DONE**
+
+Left for reference. All nine sources listed in its `CMakeLists.txt` now exist.
 
 `CMakeLists.txt` already lists all of these `SRCS`, so the component will not configure
 until they exist.
@@ -233,12 +293,94 @@ Clock first (no API dependency), Claude last (experimental, must not block the o
   list; secrets masked with "replace" not "reveal"; factory reset; OTA check/install; shows
   version + git SHA.
 
-### 4.6 `main/`
+### 4.5a Wallpaper lock screen (requested 1 Aug 2026) — `plugins/wallpaper/`
 
-`idf_component.yml` (**the real dependency manifest** — see §5 below), `CMakeLists.txt`,
-`app_main.cpp`, `app_controller.{hpp,cpp}`: boot order = NVS → Board::init → boot screen →
-LittleFS → settings → timezone → PageManager + plugins → Wi-Fi rail → Wi-Fi → SNTP →
-`esp_ota_mark_app_valid_cancel_rollback()` **only after** start-up checks pass.
+A screensaver that takes over after a configurable idle period and needs a PIN to dismiss.
+
+Registered **out of rotation**, exactly like Settings, so it reuses `PageScaffold`,
+`PageManager::openOverlay()` and the page lifecycle rather than being a special case.
+
+#### Behaviour
+
+1. `PageManager` tracks `last_interaction_tick_`, reset by any touch press and by any
+   programmatic navigation.
+2. After `lock_idle_timeout_minutes` with no interaction, `openOverlay("wallpaper")` and set a
+   `locked_` flag.
+3. While locked, `GestureDetector::setEnabled(false)` — swipes must not be able to reach the
+   dashboard behind the lock. The only live control is the wallpaper's own keypad.
+4. Tapping the wallpaper reveals a numeric keypad. A correct PIN clears `locked_`, re-enables
+   gestures and `closeOverlay()` restores the page that was showing.
+
+#### Design decisions to honour
+
+* **The wallpaper must not display page data.** Clock, date and (optionally) weather only. The
+  point of a lock screen is defeated if the to-do list and Claude usage are readable over it.
+  This is a functional requirement, not a styling preference.
+* **Store a salted SHA-256 of the PIN, never the PIN.** mbedtls is already a dependency and
+  `CONFIG_MBEDTLS_HARDWARE_SHA=y` is set. Salt goes in `dash.cfg`, hash in the **secret**
+  namespace `dash.sec`. Never logged, masked in Settings, "replace" not "reveal" — same rule as
+  every other secret.
+* **FAIL OPEN on misconfiguration.** If locking is enabled but no PIN has been set, do **not**
+  lock. Otherwise a half-finished settings change bricks the only interface the device has.
+* **Rate-limit wrong attempts** with an increasing delay (e.g. 1 s, 2 s, 5 s, 15 s, capped) and
+  no permanent lockout. This is a desk clock, not a vault.
+* **A forgotten PIN must be recoverable.** The recovery path is a USB factory reset
+  (`Settings::factoryReset()` equivalent over serial, or reflash). Must be documented in
+  `README.md` next to the existing factory-reset instructions.
+* **Be honest about what this is.** It is a deterrent against a passer-by reading your to-do
+  list, not security: anyone with physical access and a USB cable can reflash the device. Say so
+  in `docs/CONFIGURATION.md` rather than implying otherwise.
+
+#### Interaction with the existing dim schedule
+
+Two independent timers, and they must not fight:
+
+* The **dim schedule** is time-of-day based (22:30–07:00) and already implemented in
+  `tab5_board::Backlight`.
+* The **idle lock** is inactivity based.
+
+Locking should also drop the backlight to the night level via `Backlight::setTemporary()`, and
+unlocking must restore the scheduled level by calling `applyNightMode()` again — not by assuming
+the day level, or unlocking at 23:00 would blind the room.
+
+#### New settings (added to `config/example_config.json`)
+
+| Key | Notes |
+| --- | --- |
+| `lock.enabled` | bool, default **false** |
+| `lock.idle_timeout_minutes` | 0 = never lock; default 15 |
+| `lock.pin` | 4–8 digits. Placeholder only in the example file; stored hashed |
+| `lock.show_weather` | bool, whether the wallpaper may show weather as well as the clock |
+| `lock.wallpaper_style` | `clock` \| `clock_minimal` — room for an image later |
+
+#### Open question
+
+Whether the wallpaper should also be reachable on demand (a deliberate "lock now" action) as
+well as on idle. A long press already opens Settings, so a second long-press gesture is not
+available; the likely answer is a button on the Settings page.
+
+### 4.6 `main/` ← **RESUME HERE. Nothing in the tree configures until this exists.**
+
+This is now the highest-priority item, ahead of storage/network/OTA, because **it is what
+unblocks the first `idf.py build`** — and that build is what validates the BSP dependency set,
+the LVGL 9 API calls, the esp_hosted pins and the partition table all at once. Every one of
+those is currently unverified.
+
+Minimum for a first build (deliberately small — do NOT wait for the other components):
+
+| File | Contents |
+| --- | --- |
+| `main/idf_component.yml` | The dependency manifest in §5 below. Include `esp_hosted` / `esp_wifi_remote` / `littlefs` even though no code uses them yet — the point is to surface version-solver problems now. |
+| `main/CMakeLists.txt` | `SRCS "app_main.cpp"`, `INCLUDE_DIRS "." "${CMAKE_SOURCE_DIR}/config"`, `REQUIRES tab5_board dashboard_core clock nvs_flash` |
+| `main/placeholder_plugin.hpp` | A `PluginBase` subclass taking id/title/description, `refreshIntervalMs()` returning **0** so the scheduler skips it entirely. Temporary stand-in for weather / elizabeth / todos / claude / settings; delete each as the real plugin lands. Satisfies Milestone 2's "placeholder pages". |
+| `main/app_main.cpp` | NVS init (with the erase-and-retry on `NO_FREE_PAGES`) → `Board::init()` → `timeutil::setTimezone(cfg::kDefaultTimezone)` → RTC `restoreSystemTime()` → under `LvglLock`: `PageManager::begin(board.display())`, plugin `initialise()`, `add()`, `startPages("clock")`. |
+
+Then move the repo (§6a) and build (§6b).
+
+`app_controller.{hpp,cpp}` comes **later**, once storage/network/OTA exist, and takes over the
+full boot order: NVS → Board → boot screen → LittleFS → settings → timezone → PageManager +
+plugins → Wi-Fi rail → Wi-Fi → SNTP → `esp_ota_mark_app_valid_cancel_rollback()` **only after**
+start-up checks pass.
 
 ### 4.7 `scripts/` + `.github/workflows/`
 
@@ -390,9 +532,11 @@ make the partition table invalid. This is open question §6 item 1 below.
 * ✅ Committed and pushed as `ef000cb`; `origin` is configured and `main` tracks it. No further
   git setup is needed — subsequent work is ordinary `git add` / `commit` / `push`.
 * ⚠️ **`components/dashboard_core/CMakeLists.txt` lists nine source files, of which only
-  `src/semver.cpp` exists.** CMake will fail to configure until §4.1 is finished. So either
-  complete §4.1 before the first `idf.py build`, or temporarily trim that `SRCS` list. This is
-  the single thing most likely to cause confusion on resuming.
+  `src/semver.cpp` exists.** — **NO LONGER TRUE, all nine now exist.** The blocker is now that
+  there is no `main/` component at all, which ESP-IDF requires. See §4.6.
+* ⚠️ **Nothing has been compiled at any point.** Every LVGL 9 and BSP call is written from
+  documentation and source inspection, not from a passing build. Expect the first build to
+  surface real errors — that is what it is for.
 * Before any commit, run `git status` and confirm none of these are staged: `sdkconfig`,
   `build/`, `managed_components/`, `dependencies.lock`, `config/local_config.json`, anything
   matching `*.bin` / `*.elf` / `*.map`. `.gitignore` already covers all of them — the check is

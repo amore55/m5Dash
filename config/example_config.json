@@ -29,6 +29,22 @@
     "show_seconds": false
   },
 
+  "lock": {
+    "_comment": [
+      "Idle wallpaper/lock screen. The PIN is stored SALTED AND HASHED in NVS, never in",
+      "plaintext and never in this file. If enabled is true but no PIN has been set the device",
+      "deliberately does NOT lock — otherwise a half-finished settings change would leave you",
+      "unable to reach the only interface the device has.",
+      "This is a deterrent against someone reading your to-do list, not security: physical",
+      "access plus a USB cable defeats it. A forgotten PIN is recovered by factory reset."
+    ],
+    "enabled": false,
+    "idle_timeout_minutes": 15,
+    "pin": "REPLACE_WITH_4_TO_8_DIGITS_OR_LEAVE_EMPTY",
+    "wallpaper_style": "clock",
+    "show_weather": false
+  },
+
   "pages": {
     "default_page": "clock",
     "enabled": ["clock", "claude", "weather", "todos", "elizabeth"],

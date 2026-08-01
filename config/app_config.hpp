@@ -43,7 +43,11 @@ constexpr uint32_t kTflCommuteRefreshMs = 2u * 60u * 1000u;      // 2 minutes in
 constexpr uint32_t kTflIdleRefreshMs = 10u * 60u * 1000u;        // 10 minutes otherwise
 constexpr uint32_t kClaudeRefreshMs = 5u * 60u * 1000u;          // ~5 minutes
 constexpr uint32_t kTodosRefreshMs = 30u * 1000u;                // UI reconcile only
-constexpr uint32_t kClockRefreshMs = 60u * 60u * 1000u;          // NTP top-up
+
+/// The clock face redraws every UI tick; this interval only controls how often the plugin
+/// re-checks whether the system clock has become valid (NTP or RTC), so it can stop showing
+/// "waiting for time sync" promptly once it has.
+constexpr uint32_t kClockRefreshMs = 60u * 1000u;
 
 /// Telegram long-poll timeout handed to getUpdates. The HTTP timeout is this plus a margin.
 constexpr uint32_t kTelegramLongPollSeconds = 25;
