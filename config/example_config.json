@@ -63,10 +63,10 @@
 
   "ota": {
     "_comment": [
-      "NOTE: this URL does NOT work while the GitHub repository is private — a private repo",
-      "returns 404 for releases/latest/download/... to any unauthenticated client.",
-      "It is shown here as the shape of a correct URL. Pick one of the five options in",
-      "docs/IMPLEMENTATION_PLAN.md section 9.1 before relying on OTA."
+      "The repository is public, so this URL is anonymously fetchable and the device needs no",
+      "credential for OTA. Note that GitHub answers this with a 302 to",
+      "objects.githubusercontent.com, so the OTA client must follow one cross-host redirect.",
+      "See docs/IMPLEMENTATION_PLAN.md section 9.1."
     ],
     "channel": "stable",
     "manifest_url": "https://github.com/amore55/m5Dash/releases/latest/download/manifest.json",

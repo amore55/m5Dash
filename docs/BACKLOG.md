@@ -2,7 +2,7 @@
 
 **Paused:** 1 August 2026, part-way through the first implementation pass.
 **Local:** `c:\Moreno Functions\Projects\M5Dash` (must move — see §6a)
-**Remote:** `https://github.com/amore55/m5Dash` — **private**. Branch `main`, in sync.
+**Remote:** `https://github.com/amore55/m5Dash` — **public**. Branch `main`, in sync.
 **Committed & pushed:** `ef000cb` "Add project scaffolding, Tab5 board support and implementation plan"
 — 24 files, on top of GitHub's original `d9cc37d` *Initial commit*, whose `README.md` is
 preserved and whose generic C/C++ `.gitignore` was merged rather than replaced.
@@ -290,36 +290,29 @@ dependencies of the BSP — do not list them again.
 
 ---
 
-## 5a. DECISION NEEDED FROM YOU: the repository is private, which blocks OTA
+## 5a. ✅ CLOSED: repository visibility / OTA access
 
-Confirmed by inspection: `github.com/amore55/m5Dash` 404s for any unauthenticated request
-(web page and REST API both), while `git ls-remote` succeeds with your stored credential.
+**The repository is public.** Verified unauthenticated on 1 August 2026:
+`private: false`, `visibility: public`, `public_repos: 1`, and an anonymous fetch of
+`raw.githubusercontent.com/amore55/m5Dash/main/partitions.csv` returned HTTP 200.
 
-**Consequence:** `releases/latest/download/manifest.json` returns 404 to the device, so OTA as
-sketched cannot work. Fetching a private release asset needs a bearer token *and* cross-host
-redirect handling, and the brief rightly forbids baking a broad PAT into firmware.
+**No decision outstanding, and no credential needed on the device.**
+`releases/latest/download/<asset>` is anonymously fetchable, so `manifest_url` in
+`config/example_config.json` is correct as written. Full reasoning and the rejected
+alternatives are in
+[IMPLEMENTATION_PLAN.md §9.1](IMPLEMENTATION_PLAN.md#91-repository-visibility-and-ota--resolved-the-repository-is-public).
 
-Five options with trade-offs are written up in
-[IMPLEMENTATION_PLAN.md §9.1](IMPLEMENTATION_PLAN.md#91-the-repository-is-private--what-that-means-for-ota).
-Short version:
+Two implementation requirements survive:
 
-1. **Make the repo public** — simplest, no device credential at all. Nothing secret is
-   committed. *Recommended if the code can be public.*
-2. Private source + a separate **public releases repo**.
-3. Private source + **any static HTTPS host** (R2 / S3 / VPS). *Recommended otherwise.*
-4. GitHub Pages — plan-dependent, easy to get wrong, not recommended as the default.
-5. Stay fully private with a **fine-grained read-only PAT in NVS** — narrowest token, but a
-   bearer token then lives in device flash and expires.
+* **`OtaService` MUST follow one cross-host redirect.** `releases/latest/download/...` answers
+  302 to `objects.githubusercontent.com` on public repos too. The full certificate bundle
+  already covers both hosts. Going public removed the *token* requirement, not the redirect.
+* Optional `Authorization: Bearer` support is still built, **off by default**, sourced from NVS
+  only. Cheap, and keeps a move to an authenticated host possible without a firmware change.
 
-**This does not block writing code.** `manifest_url` is a runtime setting, so options 2/3/5 all
-work without a firmware change. Two things are carried into the implementation regardless, so
-that option 5 stays reachable:
-
-* `OtaService` takes an **optional** `Authorization: Bearer` header, sourced from NVS only —
-  never a compiled-in constant. Off by default.
-* `OtaService` follows **one** cross-host redirect.
-
-`config/example_config.json` now carries an inline warning on the `ota` block.
+⚠️ **Because the repo is public, `.gitignore` hygiene is now load-bearing rather than tidy.**
+Anything committed is world-readable permanently and cannot be un-published. Run the staged-file
+and token-shape checks in §7 before every push.
 
 ---
 

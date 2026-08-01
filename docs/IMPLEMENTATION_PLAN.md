@@ -351,53 +351,67 @@ adding a partition later forces a USB reflash.
 
 ---
 
-### 9.1 The repository is private — what that means for OTA
+### 9.1 Repository visibility and OTA — RESOLVED: the repository is public
 
-**Established fact, not an assumption:** `https://github.com/amore55/m5Dash` returns HTTP 404
-to an unauthenticated request (both the web page and the REST API), while `git ls-remote`
-against the same URL succeeds using the locally stored credential. The repository is
-**private**.
+**Status: closed.** `amore55/m5Dash` is **public**, verified unauthenticated on
+1 August 2026:
 
-This breaks the naive OTA path. On a private repository:
+```
+api.github.com/repos/amore55/m5Dash  ->  private: false, visibility: public
+api.github.com/users/amore55         ->  public_repos: 1
+raw.githubusercontent.com/amore55/m5Dash/main/partitions.csv  ->  HTTP 200
+```
 
-* `https://github.com/OWNER/REPO/releases/latest/download/<asset>` returns 404 without
-  credentials.
-* The asset must be fetched through the REST API
-  (`/repos/OWNER/REPO/releases/assets/<id>` with `Accept: application/octet-stream`) using an
-  `Authorization` header, and that call answers with a **cross-host redirect** to
-  `objects.githubusercontent.com` bearing a short-lived signed URL.
-* So the device would need both a bearer token and cross-host redirect handling.
+**Chosen path: option 1 below.** Consequences:
 
-The brief is explicit that a broad GitHub personal access token must not be embedded in
-firmware, and that is the right instinct: a `repo`-scoped classic PAT in flash is a
-read/write credential for every repository the account can reach.
+* `https://github.com/amore55/m5Dash/releases/latest/download/<asset>` is anonymously
+  fetchable, so OTA needs **no credential on the device at all**. This is the best available
+  outcome — there is no token in firmware, none in NVS, and nothing to expire or rotate.
+* `manifest_url` in `config/example_config.json` is correct as written.
+* **Cross-host redirect handling is still mandatory.** `releases/latest/download/<asset>`
+  answers with a 302 to `objects.githubusercontent.com` carrying a short-lived signed URL,
+  on public repositories too. `OtaService` must follow one cross-host redirect, and the
+  certificate bundle has to cover both hosts — `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL`
+  in `sdkconfig.defaults` does. Going public removed the *bearer token* requirement, not the
+  redirect.
+* Optional `Authorization: Bearer` support is **still implemented but off by default**,
+  sourced from NVS only and never from a compiled-in constant. It costs almost nothing and
+  keeps options 3 and 5 reachable without a firmware change if distribution ever moves to an
+  authenticated host.
 
-The `manifest_url` in `config/example_config.json` currently points at
-`releases/latest/download/manifest.json`, which **will not work while the repository is
-private**. It is left in place as the shape of a working URL, with this section as the
-pointer.
+Because the repository is public, the repository hygiene rules in §9 stop being merely good
+practice and become load-bearing: **anything committed here is world-readable, permanently, and
+git history cannot be un-published.** No credential has been committed, `config/example_config.json`
+holds placeholders only, and `.gitignore` blocks local config, build output and generated files.
 
-#### Options, with trade-offs
+#### The options as they were evaluated
+
+Retained because the trade-offs still apply if distribution ever moves, and because the brief
+asked for them to be documented rather than silently resolved.
+
+The situation that prompted this: on a **private** repository
+`releases/latest/download/<asset>` returns 404 to an anonymous client. The asset then has to
+be fetched through the REST API (`/repos/OWNER/REPO/releases/assets/<id>` with
+`Accept: application/octet-stream`) using an `Authorization` header — so the device would need
+both a bearer token *and* redirect handling. The brief is explicit that a broad GitHub PAT must
+not be embedded in firmware, and that is the right instinct: a `repo`-scoped classic PAT in
+flash is a read/write credential for every repository the account can reach.
 
 | # | Option | Trade-off |
 | --- | --- | --- |
-| 1 | **Make the repository public.** | Simplest, and unauthenticated OTA works immediately. No credential on the device at all. Cost: the source becomes visible. Nothing secret is committed — no keys, no tokens, `config/example_config.json` is placeholders only — so the real question is only whether you want the project public. |
+| 1 | **Make the repository public.** ✅ **CHOSEN** | Simplest, and unauthenticated OTA works immediately. No credential on the device at all. Cost: the source becomes visible. Nothing secret is committed — no keys, no tokens, `config/example_config.json` is placeholders only — so the real question was only whether the project should be public. It is. |
 | 2 | **Private source + a separate public releases repository.** | Source stays private; the release workflow publishes `app.bin` + `manifest.json` to a small public repo. Unauthenticated OTA works, no device credential. Cost: a second repository and a cross-repo token *in CI* (not in firmware). |
 | 3 | **Private source + any static HTTPS host** (Cloudflare R2/Pages, S3, a VPS). | Same benefits as 2, and decouples firmware distribution from GitHub entirely. Cost: you operate a host. The OTA service already treats the manifest URL as a setting, so this needs no firmware change. |
 | 4 | **GitHub Pages.** | Possible, but whether Pages can be served *from* a private repository depends on the GitHub plan, and a Pages site is generally publicly readable regardless — **verify against your own account before relying on it.** Not recommended as the default because the availability rules are easy to get wrong. |
 | 5 | **Keep everything private, store a fine-grained read-only PAT in NVS.** | Narrowest viable token: single-repository, Contents-read-only, expiring, revocable. Entered through the setup portal, never committed, never logged. Cost: a bearer token does live in device flash — so if the flash is read (physical access, NVS encryption off) it leaks, and it expires and needs re-entering. Also needs cross-host redirect support in the OTA client. |
 
-**Recommendation: option 1 if the code can be public, otherwise option 3.**
+Recommendation at the time was option 1 if the code could be public, otherwise option 3.
+Option 1 was taken.
 
-Deliberately *not* done: weakening TLS verification, or defaulting to a broad PAT, to make a
-private repository work. Options 2, 3 and 5 all remain reachable without a firmware change
-because `manifest_url` is a configuration item — which is exactly why the brief asked for the
-manifest host to be configurable.
-
-**Design consequence carried into the implementation:** `OtaService` must support an optional
-`Authorization: Bearer` header (sourced from NVS, never from a compiled-in constant) and must
-handle a single cross-host redirect, so option 5 stays available. Neither is enabled by
-default.
+Deliberately *not* done at any point: weakening TLS verification, or defaulting to a broad
+PAT, to make a private repository work. Options 2, 3 and 5 all remain reachable without a
+firmware change because `manifest_url` is a configuration item — which is exactly why the brief
+asked for the manifest host to be configurable.
 
 ## 10. Open questions / assumptions
 
