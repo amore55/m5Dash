@@ -1,8 +1,11 @@
 # Backlog / resume point
 
 **Paused:** 1 August 2026, part-way through the first implementation pass.
-**Repo:** `c:\Moreno Functions\Projects\M5Dash` — git initialised on branch `main`, **nothing committed yet**, no remote added.
-**Intended remote:** `https://github.com/amore55/m5Dash`
+**Local:** `c:\Moreno Functions\Projects\M5Dash` (must move — see §6a)
+**Remote:** `https://github.com/amore55/m5Dash` — **private**. Branch `main`, in sync.
+**Committed & pushed:** `ef000cb` "Add project scaffolding, Tab5 board support and implementation plan"
+— 24 files, on top of GitHub's original `d9cc37d` *Initial commit*, whose `README.md` is
+preserved and whose generic C/C++ `.gitignore` was merged rather than replaced.
 **Toolchain:** ESP-IDF **v5.4.4** installed and verified working — activate with `. .\scripts\idf_env.ps1` (§1.1).
 
 **Resume at [§4.1](#41-finish-componentsdashboard_core--resume-here).** Two environment
@@ -391,7 +394,8 @@ make the partition table invalid. This is open question §6 item 1 below.
 
 ## 7. Housekeeping when resuming
 
-* **Nothing is committed yet** and no remote is configured.
+* ✅ Committed and pushed as `ef000cb`; `origin` is configured and `main` tracks it. No further
+  git setup is needed — subsequent work is ordinary `git add` / `commit` / `push`.
 * ⚠️ **`components/dashboard_core/CMakeLists.txt` lists nine source files, of which only
   `src/semver.cpp` exists.** CMake will fail to configure until §4.1 is finished. So either
   complete §4.1 before the first `idf.py build`, or temporarily trim that `SRCS` list. This is
