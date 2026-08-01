@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "PLACEHOLDERS ONLY. This file documents every configurable value and is safe to commit.",
+    "The device does NOT read this file at runtime — configuration lives in NVS and is set",
+    "through the first-run setup portal or the on-device Settings page.",
+    "",
+    "To keep a private copy of your real values, copy this to config/local_config.json,",
+    "which is git-ignored. See docs/CONFIGURATION.md."
+  ],
+
+  "schema_version": 1,
+
+  "device": {
+    "name": "desk-dashboard",
+    "timezone": "GMT0BST,M3.5.0/1,M10.5.0/2"
+  },
+
+  "wifi": {
+    "ssid": "REPLACE_WITH_YOUR_SSID",
+    "password": "REPLACE_WITH_YOUR_WIFI_PASSWORD"
+  },
+
+  "display": {
+    "brightness_percent": 70,
+    "night_brightness_percent": 12,
+    "dim_start": "22:30",
+    "dim_end": "07:00",
+    "clock_style": "minimal",
+    "show_seconds": false
+  },
+
+  "pages": {
+    "default_page": "clock",
+    "enabled": ["clock", "claude", "weather", "todos", "elizabeth"],
+    "order": ["clock", "weather", "elizabeth", "todos", "claude"]
+  },
+
+  "weather": {
+    "location_label": "London",
+    "latitude": 51.5072,
+    "longitude": -0.1276
+  },
+
+  "tfl": {
+    "app_key": "",
+    "commute_morning_start": "07:00",
+    "commute_morning_end": "09:30",
+    "commute_evening_start": "16:30",
+    "commute_evening_end": "19:00"
+  },
+
+  "telegram": {
+    "bot_token": "REPLACE_WITH_BOT_TOKEN_FROM_BOTFATHER",
+    "allowed_user_id": 0
+  },
+
+  "claude": {
+    "provider": "relay",
+    "organisation_id": "REPLACE_WITH_CLAUDE_ORG_UUID",
+    "session_credential": "REPLACE_WITH_SESSION_KEY_OR_LEAVE_EMPTY",
+    "relay_url": "https://example.invalid/claude-usage"
+  },
+
+  "ota": {
+    "_comment": [
+      "NOTE: this URL does NOT work while the GitHub repository is private — a private repo",
+      "returns 404 for releases/latest/download/... to any unauthenticated client.",
+      "It is shown here as the shape of a correct URL. Pick one of the five options in",
+      "docs/IMPLEMENTATION_PLAN.md section 9.1 before relying on OTA."
+    ],
+    "channel": "stable",
+    "manifest_url": "https://github.com/amore55/m5Dash/releases/latest/download/manifest.json",
+    "automatic_install": false
+  }
+}

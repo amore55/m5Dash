@@ -1,0 +1,30 @@
+# Tab5 Desk Dashboard partition table — 16 MB flash (M5Stack Tab5)
+#
+# Layout rules that this table has to satisfy:
+#   * partition table lives at 0x8000 (CONFIG_PARTITION_TABLE_OFFSET), so the first
+#     partition may not start below 0x9000
+#   * app partitions must be aligned to 0x10000
+#   * ota_0 and ota_1 must be the same size
+#
+# CHANGING THIS FILE REQUIRES A USB REFLASH. An OTA image cannot rewrite the partition
+# table, so a firmware built against a different layout will be rejected or will corrupt
+# storage. See docs/OTA.md#changing-the-partition-table.
+#
+# nvs_keys is reserved now, even though NVS encryption is disabled by default, precisely so
+# that turning encryption on later does NOT need a repartition. See docs/CONFIGURATION.md.
+#
+# Name,      Type, SubType,  Offset,    Size,      Flags
+nvs,         data, nvs,      0x9000,    0x6000,
+otadata,     data, ota,      0xf000,    0x2000,
+phy_init,    data, phy,      0x11000,   0x1000,
+nvs_keys,    data, nvs_keys, 0x12000,   0x1000,    encrypted
+ota_0,       app,  ota_0,    0x20000,   0x600000,
+ota_1,       app,  ota_1,    0x620000,  0x600000,
+# `storage` is formatted as LittleFS, not SPIFFS. The subtype stays `spiffs` (0x82) because
+# joltwallet/littlefs looks the partition up by label and 0x82 is understood by every
+# ESP-IDF 5.x partition tool, whereas the dedicated `littlefs` subtype is newer.
+# Do NOT call bsp_spiffs_mount() — it would try to mount this partition as SPIFFS.
+storage,     data, spiffs,   0xc20000,  0x300000,
+coredump,    data, coredump, 0xf20000,  0x40000,
+# 0xf60000 .. 0x1000000 (640 KB) intentionally left free for future partitions, so that a
+# later addition does not have to move anything above it.

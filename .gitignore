@@ -1,34 +1,94 @@
+# ---------------------------------------------------------------------------------------
+# Credentials and local configuration — NEVER commit these.
+# ---------------------------------------------------------------------------------------
+config/local_config.json
+config/*.local.json
+config/secrets.json
+secrets.json
+*.secret
+*.secrets
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------------------------------
+# ESP-IDF build output and per-developer configuration
+# ---------------------------------------------------------------------------------------
+build/
+Build/
+build-*/
+build_*/
+sdkconfig
+sdkconfig.old
+sdkconfig.ci
+managed_components/
+dependencies.lock
+*.bin
+*.elf
+*.map
+*.hex
+*.uf2
+
+# Generated release artefacts
+manifest.json
+firmware/
+dist/
+*.sha256
+
+# ---------------------------------------------------------------------------------------
+# Generated font/asset sources (regenerate with scripts/generate_fonts.py)
+# ---------------------------------------------------------------------------------------
+assets/fonts/*.c
+assets/fonts/*.ttf
+assets/fonts/*.otf
+
+# ---------------------------------------------------------------------------------------
+# Host test build
+# ---------------------------------------------------------------------------------------
+test/host/build/
+Testing/
+
+# ---------------------------------------------------------------------------------------
+# CMake
+# ---------------------------------------------------------------------------------------
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+
+# ---------------------------------------------------------------------------------------
+# Generic C/C++ build artefacts (retained from the repository's original .gitignore)
+# ---------------------------------------------------------------------------------------
 # Prerequisites
 *.d
 
-# Compiled Object files
+# Compiled object files
 *.slo
 *.lo
 *.o
 *.obj
 
-# Precompiled Headers
+# Precompiled headers
 *.gch
 *.pch
 
-# Linker files
+# Linker / debugger files
 *.ilk
-
-# Debugger Files
 *.pdb
+*.dwo
 
-# Compiled Dynamic libraries
+# Compiled dynamic libraries
 *.so
 *.dylib
 *.dll
 *.so.*
 
-
 # Fortran module files
 *.mod
 *.smod
 
-# Compiled Static libraries
+# Compiled static libraries
 *.lai
 *.la
 *.a
@@ -39,31 +99,28 @@
 *.out
 *.app
 
-# Build directories
-build/
-Build/
-build-*/
+# vcpkg
+vcpkg_installed/
 
-# CMake generated files
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-Makefile
-install_manifest.txt
-compile_commands.json
-
-# Temporary files
+# ---------------------------------------------------------------------------------------
+# Editors / OS / tooling
+# ---------------------------------------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.default.json
+.idea/
+.cache/
 *.tmp
 *.log
 *.bak
 *.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# vcpkg
-vcpkg_installed/
-
-# debug information files
-*.dwo
-
-# test output & cache
-Testing/
-.cache/
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
