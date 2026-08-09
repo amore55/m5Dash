@@ -1,9 +1,10 @@
 # Backlog / resume point
 
-**Local:** `C:\dev\m5Dash` — **moved** off the old space-containing path, which ESP-IDF cannot
-build through. The old location `c:\Moreno Functions\Projects\M5Dash` now holds only **empty
-directories** that VS Code still has locked; delete it once the editor is closed, and reopen the
-workspace at `C:\dev\m5Dash`.
+**Local:** `c:\Moreno Functions\Projects\M5Dash` — where it belongs. A brief relocation to
+`C:\dev\m5Dash` was made on the assumption that ESP-IDF cannot build through a path containing a
+space; that was **tested and proved wrong on 5.4.4**, so it was reverted and the copy deleted.
+See [IMPLEMENTATION_PLAN.md §1.1](IMPLEMENTATION_PLAN.md#11-spaces-in-the-project-path--tested-and-not-a-problem-on-544).
+**Do not move this project again on that basis.**
 **Remote:** `https://github.com/amore55/m5Dash` — **public**. Branch `main`.
 **Toolchain:** ESP-IDF **v5.4.4** — activate with `. .\scripts\idf_env.ps1` (§1.1).
 
@@ -542,24 +543,27 @@ The ones that will bite first:
 
 ---
 
-## 6a. Repo location — ✅ **DONE**
+## 6a. Repo location — ✅ settled, stays at `c:\Moreno Functions\Projects\M5Dash`
 
-The project was moved from `c:\Moreno Functions\Projects\M5Dash` to **`C:\dev\m5Dash`**, because
-ESP-IDF cannot build through a path containing a space (not `IDF_PATH`, not the project
-directory, not a component directory).
+Briefly moved to `C:\dev\m5Dash` on the assumption that ESP-IDF cannot build through a path
+containing a space. **That assumption was tested and is false on 5.4.4**: a full build from the
+`Moreno Functions` path exits 0 and produces the same binary. The move was reverted and
+`C:\dev\m5Dash` deleted.
 
-A **directory junction was tried first** and does **not** work: `idf.py` resolves it back to the
-real path and reports the original space-containing directory. Do not attempt that again.
+Findings worth keeping, so this is not re-litigated:
 
-`Move-Item` failed with a file-in-use error (VS Code), so `robocopy /E /MOVE` was used. All 175
-files transferred and git history is intact at the new path; the old location retains only empty
-directories that VS Code has locked. **Delete `c:\Moreno Functions\Projects\M5Dash` once the
-editor is closed, and reopen the workspace at `C:\dev\m5Dash`.**
+* **Spaces in the project path are fine on ESP-IDF 5.4.4.** Ninja quotes them correctly. The
+  advice in older Espressif issue reports no longer applies. The ESP-IDF *installation* path is a
+  separate question, and `C:\Espressif` sidesteps it anyway.
+* **A directory junction does not work as a workaround** — `idf.py` resolves it back to the real
+  target path. Irrelevant now, but do not reach for it if a path problem ever does appear.
+* `Move-Item` will fail with a file-in-use error while VS Code has the folder open; `robocopy /E`
+  works and leaves git history intact.
 
 ## 6b. Build and flash — ✅ build verified, flashing NOT yet attempted
 
 ```powershell
-cd C:\dev\m5Dash
+cd "c:\Moreno Functions\Projects\M5Dash"
 . .\scripts\idf_env.ps1
 idf.py set-target esp32p4     # first configure: downloads ~28 components, took ~2 min
 idf.py build
@@ -591,7 +595,7 @@ make the partition table invalid. This is open question §6 item 1 below.
 * ⚠️ **Nothing has been flashed or run on hardware.** The build proves the code compiles and
   links for esp32p4; it proves nothing about display output, touch, the RTC, the C6 Wi-Fi link,
   gesture thresholds or software-rotation performance. See §6 for the open hardware questions.
-* When editing, remember the project now lives at **`C:\dev\m5Dash`** — not the old path.
+* The project lives at **`c:\Moreno Functions\Projects\M5Dash`** and stays there. See §6a.
 * Before any commit, run `git status` and confirm none of these are staged: `sdkconfig`,
   `build/`, `managed_components/`, `dependencies.lock`, `config/local_config.json`, anything
   matching `*.bin` / `*.elf` / `*.map`. `.gitignore` already covers all of them — the check is

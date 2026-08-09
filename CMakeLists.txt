@@ -3,8 +3,6 @@
 # Target: M5Stack Tab5 (ESP32-P4 application processor, ESP32-C6 radio coprocessor)
 # Pinned toolchain: ESP-IDF v5.4.4  (CI is exact; the manifest accepts any 5.4.x)
 #                   See docs/IMPLEMENTATION_PLAN.md §2.1 for why 5.4.4 and not 5.4.2.
-#
-# NOTE: ESP-IDF cannot build from a path containing spaces. See §1.1 of the same document.
 
 cmake_minimum_required(VERSION 3.16)
 

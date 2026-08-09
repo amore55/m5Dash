@@ -109,7 +109,7 @@ if ($Verify) {
 }
 
 # ---------------------------------------------------------------------------------------
-# REMINDER: ESP-IDF cannot build from a path containing spaces (not IDF_PATH, not the
-# project directory, not a component directory). Keep the project somewhere like
-# C:\dev\m5Dash. See docs/IMPLEMENTATION_PLAN.md §1.1.
+# NOTE: an earlier version of this script warned that ESP-IDF cannot build from a path
+# containing spaces. That was tested on 5.4.4 and is NOT true - a full build from
+# "c:\Moreno Functions\Projects\M5Dash" succeeds. See docs/IMPLEMENTATION_PLAN.md §1.1.
 # ---------------------------------------------------------------------------------------

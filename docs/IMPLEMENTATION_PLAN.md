@@ -9,7 +9,7 @@ first pass with what was actually built.
 
 | Check | Result |
 | --- | --- |
-| Workspace path | `c:\Moreno Functions\Projects\M5Dash` — **contains a space, must be relocated before building; see below** |
+| Workspace path | `c:\Moreno Functions\Projects\M5Dash` — contains a space, which turns out to be fine on 5.4.4; see §1.1 |
 | Contents | Empty |
 | Git repository | **No** — `git init -b main` was run as part of this pass |
 | Remote | `https://github.com/amore55/m5Dash` (to be added, see README) |
@@ -27,20 +27,33 @@ machine as it stands. The repository is therefore designed so that **GitHub Acti
 first thing that compiles it**, and both a firmware build job and a host-test job run on
 every push and pull request. See [§11](#11-what-could-not-be-verified-locally).
 
-### 1.1 The project path must not contain spaces
+### 1.1 Spaces in the project path — tested, and NOT a problem on 5.4.4
 
-**ESP-IDF's build system does not support spaces anywhere in a path** — not `IDF_PATH`, not
-the project directory, not a component directory. The failure is not a clean error: it
-surfaces as unescaped-path errors deep in the build (typically around `bootloader.elf`, or
-`Permission denied` from `idf_size.py`).
+The widely-reported ESP-IDF limitation that the build system cannot handle spaces anywhere in
+a path (`IDF_PATH`, the project directory, a component directory) **does not apply to
+ESP-IDF 5.4.4**, at least for this project.
 
-The initial workspace, `c:\Moreno Functions\Projects\M5Dash`, contains a space in
-*"Moreno Functions"*. **The repository must be relocated to a space-free path**, e.g.
-`C:\dev\m5Dash`, before `idf.py build` will work. The same rule constrains the ESP-IDF
-install location, which is why `C:\Espressif\frameworks\esp-idf-v5.4.4` is used.
+This was assumed from Espressif issue reports, acted on by relocating the repository, and then
+**tested properly and found to be wrong**. A full `idf.py build` from
+`c:\Moreno Functions\Projects\M5Dash` completes with **exit 0** and produces a byte-identical
+binary size to a build from a space-free path. The generated Ninja rules quote paths correctly:
 
-This is a host-environment constraint, not a repository defect — nothing in the source needs
-to change, the directory just has to live somewhere else.
+```
+cd /D "C:\Moreno Functions\Projects\M5Dash\build\esp-idf\esptool_py" && ...
+```
+
+**The project therefore lives at `c:\Moreno Functions\Projects\M5Dash`.** The temporary
+relocation to `C:\dev\m5Dash` has been reverted and that copy deleted.
+
+Two caveats worth keeping in mind, since the underlying advice is not entirely obsolete:
+
+* The **ESP-IDF installation** path is a separate matter, and Espressif's own installer still
+  warns about spaces, parentheses and a 90-character limit there. `C:\Espressif` is used and is
+  safe regardless.
+* A third-party component with a hand-written build rule could still mishandle a quoted path.
+  If an unexplained "file not found" or "permission denied" appears mid-build after adding a
+  new component, a space in the path is worth eliminating as a hypothesis — but it is not the
+  default explanation it once was.
 
 ---
 
@@ -457,11 +470,13 @@ Recorded so they can be closed on real hardware.
 
 ## 11. What could not be verified locally
 
-* **No compilation yet.** ESP-IDF v5.4.4 has since been installed and verified working (see
-  [BACKLOG.md §1](BACKLOG.md#1-environment-verified--do-not-re-discover-this)), so the
-  firmware *can* now be built locally — but the first `idf.py build` has not been run. It is
-  blocked on relocating the repo off a path containing a space ([§1.1](#11-the-project-path-must-not-contain-spaces))
-  and on `dashboard_core` being finished.
+* ~~**No compilation.**~~ **RESOLVED.** ESP-IDF v5.4.4 is installed and `idf.py build`
+  completes with exit 0 and no warnings in this project's own code. The application binary is
+  ~1.24 MB against a 6 MB OTA slot. This validates the BSP dependency set, every LVGL 9 call,
+  the esp_hosted pins, the component graph and the partition table.
+* **Nothing has been flashed or run on hardware.** Compiling and linking for esp32p4 proves
+  nothing about display output, touch, the RTC, the ESP32-C6 Wi-Fi link, gesture thresholds or
+  whether software rotation to 1280 × 720 is fast enough. Those remain open — see §10.
 * **No host-side compilation.** There is still no host C/C++ compiler on this machine, and
   ESP-IDF does not supply one. The host unit tests are compiled for the first time by GitHub
   Actions on Ubuntu.
