@@ -1,18 +1,34 @@
 # Backlog / resume point
 
-**Paused:** 1 August 2026, part-way through the first implementation pass.
-**Local:** `c:\Moreno Functions\Projects\M5Dash` (must move — see §6a)
-**Remote:** `https://github.com/amore55/m5Dash` — **public**. Branch `main`, in sync.
-**Committed & pushed:** `ef000cb` "Add project scaffolding, Tab5 board support and implementation plan"
-— 24 files, on top of GitHub's original `d9cc37d` *Initial commit*, whose `README.md` is
-preserved and whose generic C/C++ `.gitignore` was merged rather than replaced.
-**Toolchain:** ESP-IDF **v5.4.4** installed and verified working — activate with `. .\scripts\idf_env.ps1` (§1.1).
+**Local:** `C:\dev\m5Dash` — **moved** off the old space-containing path, which ESP-IDF cannot
+build through. The old location `c:\Moreno Functions\Projects\M5Dash` now holds only **empty
+directories** that VS Code still has locked; delete it once the editor is closed, and reopen the
+workspace at `C:\dev\m5Dash`.
+**Remote:** `https://github.com/amore55/m5Dash` — **public**. Branch `main`.
+**Toolchain:** ESP-IDF **v5.4.4** — activate with `. .\scripts\idf_env.ps1` (§1.1).
 
-**Resume at [§4.1](#41-finish-componentsdashboard_core--resume-here).** Two environment
-actions are outstanding first: the repo must move off a path containing a space
-([§6a](#6a-blocker-before-the-first-build-move-the-repo-off-a-path-with-a-space)), and the
-Tab5's real flash size must be confirmed
-([§6b](#6b-first-build--the-exact-sequence-once-41-is-finished)).
+## ✅ THE BUILD IS GREEN
+
+`idf.py build` exits **0**, with **zero warnings in our own code** (3 warnings total, all from
+third-party managed components).
+
+| | |
+| --- | --- |
+| Application | `build/tab5-desk-dashboard.bin` — 1,265,216 bytes (~1.24 MB) |
+| Fits `ota_0` | 0x600000 (6 MB) — **80 % free**, ample headroom for the five real plugins |
+| Bootloader | 21,120 bytes |
+| Partition table | 3,072 bytes |
+| OTA data | 8,192 bytes |
+| Version stamped | `0.0.0-dev` + git SHA, from the CMake injection — working as designed |
+
+This validates, for the first time, everything that was previously written blind: the Tab5 BSP
+dependency set, every LVGL 9 call in the UI, the esp_hosted/esp_wifi_remote pins, the component
+graph, and the partition table.
+
+**Still unverified: anything requiring the actual device.** Nothing has been flashed or run.
+
+**Resume at [§4.2](#42-componentsdashboard_storage)** — storage, then network, then OTA, then
+the real plugins.
 
 Read [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) first — it holds the researched
 hardware facts and the design decisions. This file is only "where we stopped and what is
@@ -359,7 +375,23 @@ Whether the wallpaper should also be reachable on demand (a deliberate "lock now
 well as on idle. A long press already opens Settings, so a second long-press gesture is not
 available; the likely answer is a button on the Settings page.
 
-### 4.6 `main/` ← **RESUME HERE. Nothing in the tree configures until this exists.**
+### 4.6 `main/` — ✅ **DONE**
+
+`idf_component.yml`, `CMakeLists.txt`, `placeholder_plugin.hpp` and `app_main.cpp` all exist and
+build. The boot order implemented is: NVS (with erase-and-retry) → `Board::init()` → boot screen
+showing version and git SHA → timezone → RTC restore → per-plugin `initialise()` (a failure is
+logged and the plugin shown as disabled, never fatal) → `PageManager` begin/add/startPages →
+delete the boot screen.
+
+`app_controller.{hpp,cpp}` is still to come, once storage/network/OTA exist.
+
+**Note on displayed strings:** LVGL's built-in Montserrat faces carry ASCII plus a handful of
+`LV_SYMBOL_*` glyphs only. Em dashes, ellipses and middle dots render as empty boxes. Several
+had crept into footer and boot-screen text and were replaced with ASCII; keep new UI strings
+ASCII-only unless a font with wider coverage is generated.
+
+<details>
+<summary>Original plan for this section (kept for reference)</summary>
 
 This is now the highest-priority item, ahead of storage/network/OTA, because **it is what
 unblocks the first `idf.py build`** — and that build is what validates the BSP dependency set,
@@ -381,6 +413,8 @@ Then move the repo (§6a) and build (§6b).
 full boot order: NVS → Board → boot screen → LittleFS → settings → timezone → PageManager +
 plugins → Wi-Fi rail → Wi-Fi → SNTP → `esp_ota_mark_app_valid_cancel_rollback()` **only after**
 start-up checks pass.
+
+</details>
 
 ### 4.7 `scripts/` + `.github/workflows/`
 
@@ -422,13 +456,48 @@ dependencies:
 `esp_codec_dev`, `esp_video`, `bmi270` and `usb` all arrive transitively as **public**
 dependencies of the BSP — do not list them again.
 
-⚠️ **Two version risks to check on the first CI run:**
-1. `lvgl/lvgl ~9.2.0` vs whatever `esp_lvgl_port ^2` requires — a conflict here shows up as
-   a component-manager solver error. Fix by widening to `^9.2`.
-2. `esp_hosted 1.4.0` / `esp_wifi_remote 0.8.5` are the versions M5Stack proved, but the
-   retail C6 must be running a compatible `esp-hosted` slave image. An RPC/version error
-   from `esp_wifi_init()` means reflashing the C6 (M5Stack ship an image at
-   `platforms/tab5/wifi_c6_fw` in the user demo).
+**Both version risks have now been resolved by an actual build:**
+
+1. ✅ **RESOLVED — and it was real.** `lvgl/lvgl ~9.2.0` resolved to 9.2.2 and the build failed
+   at object 1641 of 1768 with:
+
+   ```
+   managed_components/espressif__esp_lvgl_port/src/lvgl9/esp_lvgl_port_disp.c:301:
+     error: 'LV_COLOR_FORMAT_RGB565_SWAPPED' undeclared
+   ```
+
+   `esp_lvgl_port` 2.9.0 uses an LVGL **9.3** symbol but declares a loose enough constraint that
+   the solver happily picked 9.2.2. **The floor has to be set in our manifest**, so it is now
+   `lvgl/lvgl: "~9.3.0"` (resolves to 9.3.0). Do not lower it without also pinning
+   `esp_lvgl_port` back to a release predating that symbol. Note this was *not* a solver error
+   as predicted — it was a clean resolve followed by a compile failure, which is harder to
+   diagnose from the manifest alone.
+
+2. ⚠️ **Partially resolved.** `esp_hosted 1.4.0` / `esp_wifi_remote 0.8.5` resolve cleanly and
+   compile against IDF 5.4.4 — CMake reports `Using Hosted Wi-Fi` and links esp_hosted with
+   `--whole-archive`. **Runtime remains unverified:** the retail C6 must be running a compatible
+   `esp-hosted` slave image. An RPC/version error from `esp_wifi_init()` means reflashing the C6
+   (M5Stack ship an image at `platforms/tab5/wifi_c6_fw` in the user demo).
+
+### Versions actually resolved by the first successful build
+
+```
+espressif/m5stack_tab5      1.2.0~1     espressif/esp_lvgl_port   2.9.0
+lvgl/lvgl                   9.3.0       espressif/esp_hosted      (via manifest 1.4.0)
+espressif/esp_wifi_remote   0.8.5       joltwallet/littlefs       1.22.3
+espressif/esp_lcd_ili9881c  —           espressif/esp_lcd_st7123  1.0.2
+espressif/esp_lcd_touch_gt911 —         espressif/esp_lcd_touch_st7123 1.0.2
+idf                         5.4.4
+```
+
+Both display/touch driver pairs are present, so the BSP's runtime auto-detection of the two
+Tab5 hardware revisions is compiled in.
+
+### Other fix the build forced
+
+`CONFIG_APP_ANTI_ROLLBACK` is a renamed symbol; ESP-IDF 5.4.4 warned and it is now
+`CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=n`. Left off deliberately: efuse-based anti-rollback is
+irreversible and would make development flashing a one-way door.
 
 ---
 
@@ -473,44 +542,31 @@ The ones that will bite first:
 
 ---
 
-## 6a. Blocker before the first build: move the repo off a path with a space
+## 6a. Repo location — ✅ **DONE**
 
-**ESP-IDF cannot build through a path containing a space** — not `IDF_PATH`, not the project
-directory, not a component directory. The current location,
-`c:\Moreno Functions\Projects\M5Dash`, has one in *"Moreno Functions"*. The failure is not a
-clean error; it surfaces deep in the build as unescaped-path errors (typically around
-`bootloader.elf`, or `Permission denied` from `idf_size.py`).
+The project was moved from `c:\Moreno Functions\Projects\M5Dash` to **`C:\dev\m5Dash`**, because
+ESP-IDF cannot build through a path containing a space (not `IDF_PATH`, not the project
+directory, not a component directory).
 
-Nothing in the source has to change — it is a plain directory move.
+A **directory junction was tried first** and does **not** work: `idf.py` resolves it back to the
+real path and reports the original space-containing directory. Do not attempt that again.
 
-```powershell
-robocopy "c:\Moreno Functions\Projects\M5Dash" "C:\dev\m5Dash" /E /MOVE
-# then reopen VS Code at C:\dev\m5Dash
-```
+`Move-Item` failed with a file-in-use error (VS Code), so `robocopy /E /MOVE` was used. All 175
+files transferred and git history is intact at the new path; the old location retains only empty
+directories that VS Code has locked. **Delete `c:\Moreno Functions\Projects\M5Dash` once the
+editor is closed, and reopen the workspace at `C:\dev\m5Dash`.**
 
-Do it **before the first `idf.py build`**. Doing it mid-editing-session just invalidates
-absolute paths in flight, which is why it has not been done yet.
-
-## 6b. First build — the exact sequence, once §4.1 is finished
-
-The component manager will resolve and download the BSP, LVGL, esp_hosted, esp_wifi_remote
-and LittleFS on the first configure, so allow a few minutes and a working network.
+## 6b. Build and flash — ✅ build verified, flashing NOT yet attempted
 
 ```powershell
 cd C:\dev\m5Dash
 . .\scripts\idf_env.ps1
-idf.py set-target esp32p4
+idf.py set-target esp32p4     # first configure: downloads ~28 components, took ~2 min
 idf.py build
 ```
 
-**Do not expect this to pass first time.** The two known risks, both already noted in
-[§5](#5-mainidf_componentyml--the-dependency-set-to-write):
-
-1. `lvgl/lvgl ~9.2.0` vs whatever `esp_lvgl_port ^2` demands — appears as a component-manager
-   solver error. Fix by widening to `^9.2`.
-2. `esp_hosted 1.4.0` / `esp_wifi_remote 0.8.5` were resolved by M5Stack against IDF **5.4.2**;
-   we are on **5.4.4**. Same minor line, so expected to be fine, but if the manifest solver
-   objects, widen those pins.
+Verified working: **exit 0, no warnings in our code.** See the build summary at the top of this
+file for artefact sizes.
 
 Then, with the Tab5 connected (USB-C, data cable; hold **Reset** ~2 s until the green LED
 blinks rapidly to enter download mode):
@@ -531,12 +587,11 @@ make the partition table invalid. This is open question §6 item 1 below.
 
 * ✅ Committed and pushed as `ef000cb`; `origin` is configured and `main` tracks it. No further
   git setup is needed — subsequent work is ordinary `git add` / `commit` / `push`.
-* ⚠️ **`components/dashboard_core/CMakeLists.txt` lists nine source files, of which only
-  `src/semver.cpp` exists.** — **NO LONGER TRUE, all nine now exist.** The blocker is now that
-  there is no `main/` component at all, which ESP-IDF requires. See §4.6.
-* ⚠️ **Nothing has been compiled at any point.** Every LVGL 9 and BSP call is written from
-  documentation and source inspection, not from a passing build. Expect the first build to
-  surface real errors — that is what it is for.
+* ✅ The tree configures and builds cleanly. No outstanding structural blockers.
+* ⚠️ **Nothing has been flashed or run on hardware.** The build proves the code compiles and
+  links for esp32p4; it proves nothing about display output, touch, the RTC, the C6 Wi-Fi link,
+  gesture thresholds or software-rotation performance. See §6 for the open hardware questions.
+* When editing, remember the project now lives at **`C:\dev\m5Dash`** — not the old path.
 * Before any commit, run `git status` and confirm none of these are staged: `sdkconfig`,
   `build/`, `managed_components/`, `dependencies.lock`, `config/local_config.json`, anything
   matching `*.bin` / `*.elf` / `*.map`. `.gitignore` already covers all of them — the check is
@@ -546,10 +601,21 @@ make the partition table invalid. This is open question §6 item 1 below.
 
 ### Suggested order on resuming
 
-1. Finish §4.1 (`dashboard_core`) — unblocks configure.
-2. Write `main/idf_component.yml` + `main/` (§4.6) — minimum needed for a real build.
-3. Move the repo (§6a), then `idf.py set-target esp32p4 && idf.py build` (§6b). **Get a green
-   build before writing more code** — it validates the BSP dependency set, the LVGL 9 pin, the
-   esp_hosted pins and the partition table all at once, and every one of those is currently
-   unverified guesswork.
-4. Then storage → network → OTA → plugins → workflows → tests → docs.
+1. ✅ ~~`dashboard_core`~~ — done.
+2. ✅ ~~`main/`~~ — done.
+3. ✅ ~~Move the repo and get a green build~~ — done.
+4. **`components/dashboard_storage`** (§4.2) — settings and NVS come before everything that
+   needs configuration, which is everything.
+5. `components/dashboard_network` (§4.3), then `dashboard_ota` (§4.4).
+6. Real plugins in the order in §4.5: elizabeth_line → weather → todos → claude → settings, then
+   the wallpaper lock (§4.5a). Delete each `PlaceholderPlugin` from `app_main.cpp` as its real
+   plugin lands.
+7. CI workflows (§4.7), host tests (§4.8), docs (§4.9).
+
+**Rebuild after each component**, now that a green baseline exists. A regression caught against
+a known-good build is a five-minute fix; caught three components later it is an afternoon.
+
+**Worth doing early, out of order:** flash the current firmware to the Tab5. It would close the
+biggest remaining unknowns at once — panel revision, whether software rotation to 1280x720 is
+fast enough, whether the gesture thresholds feel right, and the actual flash size (§6 item 1).
+The clock page is real, not a placeholder, so there is something meaningful to look at.

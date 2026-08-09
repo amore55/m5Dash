@@ -64,7 +64,9 @@ CONFIG_ESP_INT_WDT=y
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_BOOTLOADER_WDT_ENABLE=y
 CONFIG_BOOTLOADER_LOG_LEVEL_WARN=y
-CONFIG_APP_ANTI_ROLLBACK=n
+# Anti-rollback (efuse-based downgrade prevention) is deliberately OFF: it burns an efuse and
+# is irreversible, which would make development flashing a one-way door.
+CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK=n
 
 # ---------------------------------------------------------------------------------------
 # Core dump to flash — so a crash after an OTA can be read back over USB.

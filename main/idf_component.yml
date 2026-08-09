@@ -1,0 +1,52 @@
+## Project dependency manifest.
+##
+## ESP-IDF resolves the project's managed components from the `main` component, not from the
+## repository root — a root-level idf_component.yml is only read when the project itself is
+## being consumed as a component. See docs/IMPLEMENTATION_PLAN.md §6.
+##
+## Everything is declared here rather than per-component so there is ONE place where a version
+## is pinned. Components reach these through ordinary `REQUIRES` entries in their own
+## CMakeLists.txt; the component manager has already added them to the build by then.
+
+dependencies:
+  ## 5.4.4 in CI, but any 5.4.x locally so a contributor already on 5.4.2 is not blocked.
+  ## See docs/IMPLEMENTATION_PLAN.md §2.1 for why the project is not on 5.4.2 exactly.
+  idf: ">=5.4,<5.5"
+
+  ## Espressif's official Tab5 board support package. Handles display (ILI9881C or ST7123,
+  ## auto-detected), touch (GT911 or ST7123), LVGL port, backlight, I2C, SD card and the
+  ## PI4IOE5V6408 IO expanders that gate power to the panel, touch controller and the C6.
+  ##
+  ## Pulls in, as PUBLIC dependencies, so do NOT list them again:
+  ##   esp_lvgl_port, esp_io_expander(+pi4ioe5v6408), esp_lcd_ili9881c, esp_lcd_st7123,
+  ##   esp_lcd_touch_gt911, esp_lcd_touch_st7123, esp_codec_dev, esp_video, bmi270, usb
+  espressif/m5stack_tab5: "^1.2.0"
+
+  ## LVGL 9.3, NOT 9.2.
+  ##
+  ## esp_lvgl_port (a public dependency of the BSP, resolving to 2.9.0) references
+  ## LV_COLOR_FORMAT_RGB565_SWAPPED, which does not exist before LVGL 9.3. Its own manifest is
+  ## loose enough that the solver will happily settle on 9.2.2 and then fail to compile with:
+  ##
+  ##   esp_lvgl_port_disp.c:301: error: 'LV_COLOR_FORMAT_RGB565_SWAPPED' undeclared
+  ##
+  ## So the floor has to be set here. Do not lower it without also pinning esp_lvgl_port back
+  ## to a 2.x release that predates that symbol.
+  ##
+  ## The UI is written against the part of the LVGL 9 API that is stable across 9.2 and 9.3
+  ## (lv_display_t, lv_obj_remove_flag, lv_indev_get_active_obj, percentage transform pivots).
+  lvgl/lvgl: "~9.3.0"
+
+  ## Wi-Fi on the ESP32-P4 is provided by the ESP32-C6 coprocessor over SDIO.
+  ## These are the versions M5Stack proved on this exact board (their dependencies.lock),
+  ## and the SDIO pin/Kconfig names in sdkconfig.defaults belong to this generation.
+  ##
+  ## The retail C6 is factory-flashed with a matching esp-hosted slave image. If esp_wifi_init()
+  ## reports an RPC or version mismatch, the C6 needs reflashing rather than these pins changing
+  ## — see docs/FLASHING.md.
+  espressif/esp_hosted: "1.4.0"
+  espressif/esp_wifi_remote: "0.8.5"
+
+  ## Power-fail-safe filesystem for the task store and the API response cache.
+  ## Chosen over SPIFFS specifically because the brief requires surviving power loss mid-write.
+  joltwallet/littlefs: "^1.16.4"

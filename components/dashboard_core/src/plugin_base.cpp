@@ -242,14 +242,17 @@ void PluginBase::refreshFooter() {
     lv_color_t colour = theme::textMuted();
 
     switch (current) {
+        // NOTE: footer strings must stay ASCII. LVGL's built-in Montserrat faces only carry
+        // ASCII plus a handful of LV_SYMBOL glyphs, so an em dash or an ellipsis renders as an
+        // empty box rather than the character intended.
         case DataState::Disabled:
-            std::snprintf(line, sizeof(line), "Disabled%s%s", detail[0] != '\0' ? " — " : "",
+            std::snprintf(line, sizeof(line), "Disabled%s%s", detail[0] != '\0' ? " - " : "",
                           detail);
             colour = theme::textMuted();
             break;
 
         case DataState::Loading:
-            std::snprintf(line, sizeof(line), "Updating…");
+            std::snprintf(line, sizeof(line), "Updating...");
             colour = theme::accent();
             break;
 
@@ -267,16 +270,16 @@ void PluginBase::refreshFooter() {
             char age[32];
             timeutil::formatRelativeAge(age, sizeof(age), last, timeutil::nowUtc());
             if (detail[0] != '\0') {
-                std::snprintf(line, sizeof(line), "Data from %s — %s", age, detail);
+                std::snprintf(line, sizeof(line), "Data from %s - %s", age, detail);
             } else {
-                std::snprintf(line, sizeof(line), "Data from %s — refresh failed", age);
+                std::snprintf(line, sizeof(line), "Data from %s - refresh failed", age);
             }
             colour = theme::stale();
             break;
         }
 
         case DataState::Error:
-            std::snprintf(line, sizeof(line), "Unavailable%s%s", detail[0] != '\0' ? " — " : "",
+            std::snprintf(line, sizeof(line), "Unavailable%s%s", detail[0] != '\0' ? " - " : "",
                           detail);
             colour = theme::error();
             break;
