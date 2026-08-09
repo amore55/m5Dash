@@ -386,10 +386,18 @@ delete the boot screen.
 
 `app_controller.{hpp,cpp}` is still to come, once storage/network/OTA exist.
 
-**Note on displayed strings:** LVGL's built-in Montserrat faces carry ASCII plus a handful of
-`LV_SYMBOL_*` glyphs only. Em dashes, ellipses and middle dots render as empty boxes. Several
-had crept into footer and boot-screen text and were replaced with ASCII; keep new UI strings
-ASCII-only unless a font with wider coverage is generated.
+**Note on displayed strings — exact glyph range, read from the LVGL font sources:**
+
+```
+0x20-0x7F   printable ASCII
+0xB0        °  degree sign
+0x2022      •  bullet
++ the Font Awesome range behind LV_SYMBOL_*
+```
+
+Anything else renders as an empty box on the device. Em dashes, ellipses and middle dots had
+crept into footer and boot-screen text and were replaced. **`°C` is available**, which matters
+for the weather page. Comments and log messages are unaffected.
 
 <details>
 <summary>Original plan for this section (kept for reference)</summary>
@@ -432,12 +440,19 @@ Tiny assert-based runner (`include/tiny_test.hpp`), `shim/esp_err.h` + `shim/esp
 plain CMake, `libcjson-dev` on CI. Cover: semver, task command parsing, Claude/TfL/weather
 parsing, countdown, config migrations, `inDimWindow`.
 
-### 4.9 Docs
+### 4.9 Docs — partially done
 
-`README.md` (full walkthrough per the brief), `ARCHITECTURE.md`, `FLASHING.md` (incl.
-**recovering the ESP32-C6 slave firmware**), `OTA.md`, `CONFIGURATION.md`,
-`CLAUDE_USAGE.md`, `LICENSES.md`, `LICENSE`, `assets/fonts/README.md`,
-`assets/icons/README.md`.
+| File | State |
+| --- | --- |
+| `README.md` | ✅ Written. Honest status table, hardware/software requirements, quick start, layout, threading contract, known limitations, roadmap. Revisit as features land — several sections say "planned". |
+| `docs/FLASHING.md` | ✅ Written, step by step, including no-driver explanation, download mode, the mandatory `flash_id` check, expected boot log and screen, troubleshooting, `erase-flash`, and C6 slave-firmware recovery. **Steps needing the device are marked ⚠️ UNVERIFIED — correct them once run for real.** |
+| `LICENSE` | ✅ MIT. Copyright holder is `amore55`; replace with a legal name if preferred. |
+| `LICENSES.md` | ✅ Written from the LICENSE files actually shipped in `managed_components/` after a build, not from memory. Includes the font glyph-range constraint. |
+| `docs/ARCHITECTURE.md` | 🔲 To write |
+| `docs/OTA.md` | 🔲 To write |
+| `docs/CONFIGURATION.md` | 🔲 To write |
+| `docs/CLAUDE_USAGE.md` | 🔲 To write |
+| `assets/fonts/README.md`, `assets/icons/README.md` | 🔲 To write |
 
 ---
 
