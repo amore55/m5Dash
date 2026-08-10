@@ -67,32 +67,48 @@ native USB, so Windows enumerates it as a standard COM port.
 
 ## Quick start
 
-```powershell
-git clone https://github.com/amore55/m5Dash.git
-cd m5Dash
+The simplest route is the **Start-menu shortcut** the ESP-IDF installer creates — either
+*ESP-IDF 5.4.4 Command Prompt (cmd.exe)* or *ESP-IDF 5.4.4 PowerShell*. Both already have the
+environment set up, so you can go straight to `idf.py`.
 
-# Activate ESP-IDF. Note the leading dot-space: this MUST be dot-sourced.
-. .\scripts\idf_env.ps1
+**cmd.exe:**
 
-idf.py set-target esp32p4      # first time only
+```cmd
+cd "c:\Moreno Functions\Projects\M5Dash"
+idf.py set-target esp32p4      REM first time only
 idf.py build
 
-# Put the Tab5 in download mode: hold Reset ~2 s until the green LED blinks rapidly
-[System.IO.Ports.SerialPort]::GetPortNames()          # find your port
-esptool.py --chip esp32p4 -p COM7 flash_id            # CONFIRM 16MB before flashing
-idf.py -p COM7 flash monitor                          # Ctrl-] to exit the monitor
+REM Put the Tab5 in download mode: hold Reset ~2 s until the green LED blinks rapidly
+mode                                              REM find your COM port
+esptool.py --chip esp32p4 -p COM7 flash_id        REM CONFIRM 16MB before flashing
+idf.py -p COM7 flash monitor                      REM Ctrl-] to exit the monitor
 ```
+
+**PowerShell** — same, but from an ordinary window you must activate ESP-IDF first:
+
+```powershell
+cd "c:\Moreno Functions\Projects\M5Dash"
+. .\scripts\idf_env.ps1                               # note the leading dot-space
+idf.py build
+
+[System.IO.Ports.SerialPort]::GetPortNames()
+esptool.py --chip esp32p4 -p COM7 flash_id
+idf.py -p COM7 flash monitor
+```
+
+⚠️ `. .\scripts\idf_env.ps1` is **PowerShell syntax**. In a cmd.exe window it fails with
+`'.' is not recognized as an internal or external command` — and you don't need it there anyway.
 
 **Full step-by-step, including troubleshooting: [`docs/FLASHING.md`](docs/FLASHING.md).**
 
-### Why `scripts/idf_env.ps1` rather than ESP-IDF's `export.ps1`
+### Why `scripts/idf_env.ps1` exists
 
-ESP-IDF's own `export.ps1` invokes a bare `python`, which on Windows 11 resolves to the Microsoft
-Store app-execution-alias stub. The stub exits without doing anything and `export.ps1` then fails
-with a confusing PowerShell parse error, leaving `IDF_PATH` empty. It looks like a broken ESP-IDF
-installation and is not. The helper calls the ESP-IDF virtualenv's `python.exe` by absolute path.
-
-The Start-menu *ESP-IDF 5.4.4 PowerShell* shortcut also works fine.
+It is only needed in an **ordinary PowerShell window** (not the Start-menu shortcut, and not
+cmd.exe). ESP-IDF's own `export.ps1` invokes a bare `python`, which on Windows 11 resolves to the
+Microsoft Store app-execution-alias stub. The stub exits without doing anything, `export.ps1`
+then fails with a confusing PowerShell parse error, and `IDF_PATH` is left empty. It looks like a
+broken ESP-IDF installation and is not. The helper calls the ESP-IDF virtualenv's `python.exe` by
+absolute path instead. The cmd.exe path uses `export.bat` and is unaffected.
 
 ---
 

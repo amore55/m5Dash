@@ -51,17 +51,40 @@ does not support the newest releases anyway.
 
 ## 2. Open a terminal with ESP-IDF active
 
-`idf.py` is not on your normal `PATH`. Either:
+`idf.py` is not on your normal `PATH`. **Pick whichever of these matches the window you are in —
+the commands are not interchangeable between cmd.exe and PowerShell.**
 
-**Option A — the helper script in this repository** (works in any PowerShell window):
+### Option A — the Start-menu shortcut (simplest)
+
+The ESP-IDF installer creates two shortcuts, and **either one already has the environment set
+up**. If you see this message, you are ready and need no further setup:
+
+```
+Done! You can now compile ESP-IDF projects.
+Go to the project directory and run:  idf.py build
+```
+
+| Shortcut | Shell | Then run |
+| --- | --- | --- |
+| *ESP-IDF 5.4.4 Command Prompt (cmd.exe)* | **cmd.exe** | `cd "c:\Moreno Functions\Projects\M5Dash"` then `idf.py build` |
+| *ESP-IDF 5.4.4 PowerShell* | **PowerShell** | same |
+
+⚠️ **In the cmd.exe window, do NOT run `. .\scripts\idf_env.ps1`.** That is PowerShell syntax and
+cmd will answer `'.' is not recognized as an internal or external command`. You do not need it —
+the shortcut already exported everything.
+
+### Option B — an ordinary PowerShell window
+
+Use the helper script in this repository:
 
 ```powershell
 cd "c:\Moreno Functions\Projects\M5Dash"
 . .\scripts\idf_env.ps1
 ```
 
-Note the leading dot-space: the script must be **dot-sourced** so the environment variables
-survive the call.
+Note the **leading dot-space**: it must be dot-sourced so the environment variables survive the
+call. Add `-Verify` to print the resolved tool versions — expect
+`riscv32-esp-elf-gcc 14.2.0`, `cmake 3.30.2`, `ninja 1.12.1`, `Python 3.11.2`, `esptool.py v4.12.0`.
 
 > **Why this script exists.** ESP-IDF ships its own `export.ps1`, but it invokes a bare `python`,
 > which Windows 11 resolves to the Microsoft Store app-execution-alias stub. That stub prints
@@ -69,20 +92,18 @@ survive the call.
 > `The expression after '.' in a pipeline element produced an object that was not valid`,
 > leaving `IDF_PATH` empty. It looks like a broken ESP-IDF install and is not.
 > `scripts/idf_env.ps1` calls the virtualenv's `python.exe` by absolute path instead.
+> The cmd.exe path uses `export.bat`, which does not have this problem.
 
-**Option B — the Start menu shortcut:** *ESP-IDF 5.4.4 PowerShell*, then `cd` to the project.
+### Option C — an ordinary cmd.exe window
 
-Verify:
-
-```powershell
-. .\scripts\idf_env.ps1 -Verify
+```cmd
+C:\Espressif\idf_cmd_init.bat
+cd "c:\Moreno Functions\Projects\M5Dash"
 ```
 
-You should see `riscv32-esp-elf-gcc 14.2.0`, `cmake 3.30.2`, `ninja 1.12.1`, `Python 3.11.2` and
-`esptool.py v4.12.0`.
+### Harmless warning
 
-One warning always appears and is harmless — it refers to a diagnostic file that the installer
-does not create:
+This appears on every activation and refers to a diagnostic file the installer does not create:
 
 ```
 WARNING: ... No such file or directory: '...idf5.4_py3.11_env\idf_version.txt'
@@ -125,13 +146,30 @@ the flash will fail.
 
 ## 5. Find the COM port
 
+**PowerShell:**
+
 ```powershell
 [System.IO.Ports.SerialPort]::GetPortNames()
 ```
 
+**cmd.exe:**
+
+```cmd
+mode
+```
+
+...or, if `mode`'s output is too verbose, borrow PowerShell for one command:
+
+```cmd
+powershell -Command "[System.IO.Ports.SerialPort]::GetPortNames()"
+```
+
 You should get something like `COM7`. Substitute your value everywhere below.
 
-If nothing appears, or you want to see the device name:
+**Or skip this entirely:** omit `-p` and ESP-IDF auto-detects, provided only one device is
+attached — `idf.py flash monitor`.
+
+To see device names as well as port numbers (PowerShell):
 
 ```powershell
 Get-CimInstance Win32_PnPEntity | Where-Object { $_.Name -match 'COM\d+' } | Select-Object Name
