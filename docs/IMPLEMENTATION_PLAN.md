@@ -189,6 +189,74 @@ Confirmed from `src/bsp_display.c` and `src/bsp_feature_en.c`:
   `buffer_size = BSP_LCD_H_RES * CONFIG_BSP_LCD_DRAW_BUF_HEIGHT`, double buffered,
   `buff_dma = true`, `buff_spiram = false`, `sw_rotate = true`.
 
+### 3.1 The Tab5 has THREE panel variants, and the BSP only handles two
+
+**This is the most important hardware fact in this repository.** It cost an entire debugging
+session, and anyone bringing up a Tab5 with Espressif's BSP will hit it.
+
+Retail Tab5 units ship with one of three display panels:
+
+| Panel | Touch | I²C addr | Touch FW version reg | Espressif BSP |
+| --- | --- | --- | --- | --- |
+| ILI9881C | GT911 | 0x5D / 0x14 | — | ✅ supported ("board version 1") |
+| ST7123 | ST7123 | 0x55 | **3** | ✅ supported ("board version 2") |
+| **ST7121** | ST7123-compatible | **0x55** | **1** | ❌ **NOT supported — mis-detected as ST7123** |
+
+The BSP identifies the board by probing the touch controller's I²C address. **ST7121 and ST7123
+share address 0x55**, so the BSP finds it, logs
+`Discovered board version 2 (LCD ST7123, Touch ST7123)`, and initialises an ST7121 with the
+ST7123 command sequence and ST7123 video timings.
+
+M5Stack's own firmware goes one step further: it reads the touch controller's **firmware-version
+register (0x0000)** — `1` means ST7121, `3` means ST7123. That single read is the entire
+difference between a working display and a dead one.
+
+#### Why this is so hard to diagnose
+
+**Nothing reports an error.** MIPI-DSI command writes are fire-and-forget; there is no
+acknowledgement path from the panel. So against a panel that has never accepted its
+configuration:
+
+* `esp_lcd_panel_init()` → `ESP_OK`
+* `esp_lcd_panel_disp_on_off()` → `ESP_OK`
+* `esp_lcd_panel_draw_bitmap()` → `ESP_OK`
+* `esp_lcd_dpi_panel_set_pattern()` → `ESP_OK` — **even the DSI hardware test pattern shows
+  nothing**, because it is emitted through the same PHY the panel never locked onto
+* The backlight lights normally
+* The touch controller enumerates perfectly and reports its firmware version and 720×1280 extent
+* The boot log is immaculate
+
+...and the screen stays black. Every layer *above* the DSI link — LVGL, buffers, rotation,
+cache, DMA — is innocent, and hours can be lost eliminating them one at a time.
+
+**The test that actually settles it is flashing M5Stack's own firmware** (prebuilt binaries are
+on their [releases page](https://github.com/m5stack/M5Tab5-UserDemo/releases)). If their firmware
+displays and yours does not, the hardware is proven good and the fault is in your panel
+configuration. Do this *early*, not after exhausting your own code.
+
+#### What this project does about it
+
+* Vendors M5Stack's `esp_lcd_st7121` driver into `components/esp_lcd_st7121/` — it is
+  Apache-2.0 and Espressif-authored, it simply is not published to the component registry.
+* Implements the firmware-version check in `tab5_board::detectPanel()`, so all three variants
+  are identified correctly rather than hard-coding for one unit.
+* Brings the panel up directly instead of via `bsp_display_start_with_config()`, because that
+  helper hard-codes the ST7123 path and the 1000 Mbps lane rate.
+
+#### ST7121 parameters (from M5Stack's working firmware)
+
+| | ST7121 | ST7123 |
+| --- | --- | --- |
+| DSI lane bit rate | **965 Mbps** | 1000 Mbps |
+| DPI clock | 70 MHz | 70 MHz |
+| hsync pulse / back / front | 2 / 40 / 40 | 2 / 40 / 40 |
+| **vsync pulse / back / front** | **20 / 24 / 200** | 2 / 8 / 220 |
+| Reset GPIO | −1 (software reset only) | `BSP_LCD_RST` |
+
+The vertical porches and the lane rate are the whole difference.
+
+**Remove `components/esp_lcd_st7121/` if the upstream BSP ever gains ST7121 support.**
+
 ### Orientation decision
 
 The panel is **720 × 1280 portrait**. The brief wants a **1280 × 720 landscape** dashboard.
@@ -428,11 +496,13 @@ asked for the manifest host to be configurable.
 
 ## 10. Open questions / assumptions
 
-Recorded so they can be closed on real hardware.
+Recorded so they can be closed on real hardware. **Items struck through have been closed by
+running on the actual device.**
 
-1. **Which Tab5 revision is the target unit?** The BSP auto-detects ILI9881C+GT911 vs
-   ST7123. Assumed handled; needs confirming on the actual device from the boot log
-   (`bsp_display` logs the detected panel).
+1. ~~**Which Tab5 revision is the target unit?**~~ **CLOSED — and the answer was the single
+   biggest problem in the project.** The unit has an **ST7121** panel, which the BSP does not
+   support and silently mis-detects as ST7123. See [§3.1](#31-the-tab5-has-three-panel-variants-and-the-bsp-only-handles-two).
+   Display, touch and swipe navigation are now all verified working on hardware.
 2. **C6 slave firmware version.** Assumed factory `esp-hosted` slave compatible with
    `esp_hosted 1.4.0`. If `esp_wifi_init()` fails with an RPC/version error, the C6 needs
    reflashing — M5Stack ship an image at `platforms/tab5/wifi_c6_fw` in the user demo.
@@ -445,9 +515,13 @@ Recorded so they can be closed on real hardware.
    IO-expander-controlled power rails and an INA226. The BSP exposes no `bsp_power_*` API
    and the dashboard is a USB-C powered desk device, so no power-hold is asserted.
    Unverified for battery operation.
-5. **Software rotation cost at 1280 × 720.** Believed acceptable for a static dashboard;
-   not measured. If it is too slow, the fallback is `CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2` with
-   avoid-tear and a *portrait* layout, which loses the landscape design.
+5. **Software rotation cost at 1280 × 720.** Partly closed: rotation to landscape works on
+   hardware and the UI is usable, but throughput has not been measured and the PPA hardware
+   accelerator is currently **off** (`CONFIG_LVGL_PORT_ENABLE_PPA=n`). Turning it back on is a
+   cheap win worth revisiting — it moves rotation off the CPU — but it was disabled while
+   chasing the display fault and should be re-enabled deliberately, with a before/after look at
+   responsiveness. `kRotateToLandscape` in `board.cpp` disables rotation entirely if it ever
+   needs to be bisected again.
 6. **Large display font.** LVGL's built-in Montserrat range stops at 48 px. The clock's
    hero digits therefore use `lv_font_montserrat_48` with an LVGL transform scale, which is
    slightly soft. `scripts/generate_fonts.py` + `assets/fonts/README.md` document generating
@@ -458,10 +532,29 @@ Recorded so they can be closed on real hardware.
 8. **Telegram long-poll behind `esp_hosted`.** A 25 s held HTTPS connection over the
    SDIO-bridged C6 is assumed fine; the timeout is configurable down to short polling if it
    proves unstable.
-9. **`lv_indev` gesture reliability.** Navigation uses a self-contained polling gesture
-   state machine rather than `LV_EVENT_GESTURE`, precisely because widget hit-testing
-   swallows LVGL's built-in gestures. Thresholds (120 px, 900 ms long press, 450 ms
-   cooldown) are first guesses and are constants in one place.
+9. ~~**`lv_indev` gesture reliability.**~~ **Mostly closed.** The polling gesture state machine
+   works on hardware — swipe navigation between pages is confirmed. Thresholds (120 px, 900 ms
+   long press, 450 ms cooldown) are still first guesses and have not been tuned for feel; they
+   are all constants in `config/app_config.hpp`. Long-press-to-Settings is not yet confirmed by
+   observation.
+
+10. ⚠️ **OPEN BUG — watchdog reset loop.** The device reaches `dashboard running` and then
+    resets roughly a minute later with `rst:0x7 (HP_SYS_HP_WDT_RESET)` /
+    `CPU has been reset by WDT`, repeatedly. Observed consistently across several builds while
+    the display was still dark, so it is **not** a display problem and was deliberately left
+    alone to avoid chasing two faults at once. Needs checking now the display works, and needs
+    confirming whether it still happens.
+
+    Starting points: it is the *system/interrupt* watchdog rather than an obvious task hang;
+    prime suspects are the LVGL task, a plugin `Worker`, or the periodic `PageManager` tick.
+    `CONFIG_ESP_TASK_WDT_TIMEOUT_S` is 15 and `CONFIG_ESP_INT_WDT` is on. A core dump partition
+    exists and is configured, so `idf.py coredump-info` after a reset may go straight to the
+    answer.
+
+11. **Brownout.** `E BOD: Brownout detector was triggered` was seen once during early display
+    bring-up. Not seen since, but worth remembering if instability appears — the panel at full
+    brightness is the largest current draw on the board, and a marginal USB port would show up
+    exactly this way.
 10. **Flash size.** `sdkconfig.defaults` declares 16 MB per the Tab5 spec. Espressif's own
     example defaults for this board declare 4 MB, which would be wrong for the retail unit
     and would truncate the partition table. Verify with `esptool.py flash_id`.
@@ -471,12 +564,27 @@ Recorded so they can be closed on real hardware.
 ## 11. What could not be verified locally
 
 * ~~**No compilation.**~~ **RESOLVED.** ESP-IDF v5.4.4 is installed and `idf.py build`
-  completes with exit 0 and no warnings in this project's own code. The application binary is
-  ~1.24 MB against a 6 MB OTA slot. This validates the BSP dependency set, every LVGL 9 call,
-  the esp_hosted pins, the component graph and the partition table.
-* **Nothing has been flashed or run on hardware.** Compiling and linking for esp32p4 proves
-  nothing about display output, touch, the RTC, the ESP32-C6 Wi-Fi link, gesture thresholds or
-  whether software rotation to 1280 × 720 is fast enough. Those remain open — see §10.
+  completes with exit 0 and no warnings in this project's own code.
+* ~~**Nothing flashed or run on hardware.**~~ **RESOLVED.** Verified running on the device:
+
+  | Verified working | Notes |
+  | --- | --- |
+  | Boot, NVS, PSRAM, flash | 16 MB confirmed by `flash_id`; 32 MB PSRAM at 200 MHz |
+  | Display | ST7121 panel, 1280 × 720 landscape after 90° rotation |
+  | Backlight + brightness | PWM changes take effect |
+  | Touch | ST7123-compatible controller, 10-point, enumerates correctly |
+  | Swipe navigation | Moves between all five rotation pages |
+  | Boot screen, clock page, placeholder pages | All render |
+  | RTC presence | RX8130CE answers at 0x32 |
+
+* **Still unverified on hardware:** Wi-Fi / the ESP32-C6 link (not yet implemented),
+  long-press-to-Settings, gesture *feel*, rotation throughput, dimming schedule, burn-in nudge,
+  and every integration.
+* **The RTC is running but has never been date-set.** It reports its "data valid" flag clear,
+  yet returns nonsense dates (day 0, year 80) — raw registers logged. The driver correctly
+  rejects them and falls back to waiting for network time. Once SNTP lands, writing a real time
+  back to the RTC should close this.
+* ⚠️ **A watchdog reset loop is outstanding** — see §10 item 10.
 * **No host-side compilation.** There is still no host C/C++ compiler on this machine, and
   ESP-IDF does not supply one. The host unit tests are compiled for the first time by GitHub
   Actions on Ubuntu.

@@ -11,11 +11,17 @@ constexpr const char* kTag = "backlight";
 }
 
 esp_err_t Backlight::init() {
-    esp_err_t err = bsp_display_brightness_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(kTag, "bsp_display_brightness_init failed: %s", esp_err_to_name(err));
-        return err;
-    }
+    // Deliberately does NOT call bsp_display_brightness_init().
+    //
+    // The BSP already configures the LEDC timer and channel during display bring-up
+    // (bsp_display.c:175, inside bsp_display_new_with_handles). Calling it again re-runs
+    // ledc_channel_config() on the same pin and the driver complains:
+    //
+    //   W ledc: GPIO 22 is not usable, maybe conflict with others
+    //
+    // Harmless in practice, but it is a false alarm in the boot log, and a boot log people
+    // learn to ignore is worse than no boot log. Same rule as bsp_i2c_init() and
+    // bsp_feature_enable(BSP_FEATURE_LCD/TOUCH): if the BSP does it, we must not.
     return apply(day_percent_);
 }
 

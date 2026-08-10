@@ -243,7 +243,7 @@ python -m esptool --chip esp32p4 -b 460800 --before default_reset --after hard_r
 
 ## 8. What you should see
 
-⚠️ **UNVERIFIED** — nothing has been run on hardware yet. This is what the code is written to do.
+✅ **VERIFIED on hardware** (M5Stack Tab5 with an ST7121 panel, ESP32-P4 rev v1.3, 16 MB flash).
 
 **On the serial monitor:**
 
@@ -304,9 +304,39 @@ The device is not in download mode. Repeat step 4 — the rapid green blink is t
 
 ### The screen stays black but the serial log looks fine
 
-Check the log for `bsp_display_start_with_config failed`. If the display initialised but nothing
-is visible, suspect the backlight: `backlight init failed` is logged as a warning and is
-deliberately non-fatal, so the device boots with a dark panel rather than not booting.
+**This is the single most likely problem on a Tab5, and it is almost never your application
+code.** M5Stack ship three display panels and Espressif's BSP supports only two; the **ST7121**
+is mis-identified as an ST7123 and initialised wrongly.
+
+The symptoms are maximally misleading:
+
+* every `esp_lcd_*` call returns `ESP_OK` — MIPI-DSI command writes are fire-and-forget, so
+  nothing can report that the panel refused its configuration
+* the backlight lights normally
+* the touch controller enumerates and reports its firmware version and 720×1280 extent
+* **even `esp_lcd_dpi_panel_set_pattern()` shows nothing**, because the DSI hardware test
+  pattern is emitted through the same PHY the panel never locked onto
+
+This project handles it — `tab5_board::detectPanel()` reads the touch firmware-version register
+(1 = ST7121, 3 = ST7123) and uses the vendored `esp_lcd_st7121` driver where needed. Check the
+boot log:
+
+```
+I (xxxx) board: detected panel: ST7121
+I (xxxx) board: ST7121 panel up: 720x1280, DSI 965 Mbps x2 lanes, DPI 70 MHz
+```
+
+**If you are debugging a dark screen in any other project, do this first:** flash M5Stack's own
+firmware from their [releases page](https://github.com/m5stack/M5Tab5-UserDemo/releases)
+(a merged image — `write_flash 0x0 <file>`). If their firmware displays and yours does not, the
+hardware is proven good and the fault is in your panel configuration. It is one flash and it
+eliminates an entire branch of the search. Your own firmware is restored with `idf.py flash`.
+
+Full background: [`IMPLEMENTATION_PLAN.md §3.1`](IMPLEMENTATION_PLAN.md).
+
+If the panel is correct and it is *still* dark, suspect the backlight: `backlight init failed` is
+logged as a warning and is deliberately non-fatal, so the device boots with a dark panel rather
+than not booting at all.
 
 ### The build fails after adding a component
 

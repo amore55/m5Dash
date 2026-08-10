@@ -28,10 +28,31 @@ CONFIG_PARTITION_TABLE_OFFSET=0x8000
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_200M=y
-CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_CACHE_L2_CACHE_256KB=y
-CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
+# ---------------------------------------------------------------------------------------
+# DELIBERATELY NOT SET — these were copied from M5Tab5-UserDemo and are believed to be why
+# the panel initially came up blank. Do not re-add without re-testing the display.
+#
+#   CONFIG_CACHE_L2_CACHE_LINE_128B
+#       On the ESP32-P4 internal RAM sits behind the L2 cache, so LCD DMA buffers need cache
+#       maintenance, and esp_cache_msync() requires the buffer to be aligned to the cache
+#       LINE size. Raising the line from the default 64 B to 128 B doubles that requirement,
+#       and esp_lvgl_port allocates its draw buffers with an unaligned heap_caps_malloc().
+#       M5Stack get away with it because their demo uses a different rendering path.
+#
+#   CONFIG_CACHE_L2_CACHE_256KB
+#       Harmless in itself, but changed together with the line size, so it is left at the
+#       default until the display is proven stable.
+#
+#   CONFIG_SPIRAM_XIP_FROM_PSRAM
+#       Executes .text/.rodata from PSRAM. Espressif's own reference configuration for this
+#       board does not enable it, and it competes with the display for PSRAM bandwidth.
+#
+# Espressif's known-good reference for this board is
+# esp-bsp/examples/display/sdkconfig.bsp.m5stack_tab5 — worth diffing against before
+# blaming application code for a display problem.
+# ---------------------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------------------
 # CPU / compiler
@@ -137,15 +158,39 @@ CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
 CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
 
 # ---------------------------------------------------------------------------------------
+# Screen rotation via the ESP32-P4's Pixel Processing Accelerator.
+#
+# The panel is physically 720x1280 portrait; the UI is 1280x720 landscape. Without this,
+# esp_lvgl_port rotates every flushed area on the CPU with lv_draw_sw_rotate(), which on a
+# 921,600-pixel display is a lot of work to do in software when the SoC has dedicated
+# hardware for exactly this.
+#
+# It also allocates its buffer with heap_caps_aligned_calloc() at the cache line size
+# (lcd_ppa.c:59), whereas the software path uses a plain heap_caps_malloc() — which matters
+# because the buffers live in PSRAM and are cache-synced.
+#
+# Requires SOC_PPA_SUPPORTED, which is 1 on the ESP32-P4. Defaults to n upstream.
+# ---------------------------------------------------------------------------------------
+# TEMPORARILY OFF while the display is being brought up: Espressif's reference config for this
+# board does not enable it, and the goal right now is to match a known-good configuration
+# exactly. Re-enable once a picture is confirmed — it is genuinely worth having, since it moves
+# rotation off the CPU onto dedicated hardware.
+CONFIG_LVGL_PORT_ENABLE_PPA=n
+
+# ---------------------------------------------------------------------------------------
 # M5Stack Tab5 BSP
 #
-# Draw buffer: 720 x 60 px x 2 B = 86 KB, doubled = 173 KB of internal DMA RAM.
-# 60 lines is a compromise: taller buffers reduce flush count but sw-rotation needs the
-# whole buffer resident in internal RAM.
+# NOTE: tab5_board::Board::init() passes an explicit bsp_display_cfg_t and therefore does not
+# use CONFIG_BSP_LCD_DRAW_BUF_HEIGHT. It is kept in step with the value in board.cpp so the
+# two do not tell different stories.
+#
+# Draw buffers are 720 x 120 px x 2 B = 173 KB each, in DMA-capable PSRAM (not internal RAM).
+# See the long comment in board.cpp: rotation needs a third buffer of the same size, and
+# three of these do not fit in the ~243 KB largest internal block.
 # ---------------------------------------------------------------------------------------
 CONFIG_BSP_ERROR_CHECK=y
 CONFIG_BSP_I2C_NUM=1
-CONFIG_BSP_LCD_DRAW_BUF_HEIGHT=60
+CONFIG_BSP_LCD_DRAW_BUF_HEIGHT=40
 CONFIG_BSP_LCD_DRAW_BUF_DOUBLE=y
 CONFIG_BSP_LCD_DPI_BUFFER_NUMS=1
 CONFIG_BSP_LCD_USE_DMA2D=y

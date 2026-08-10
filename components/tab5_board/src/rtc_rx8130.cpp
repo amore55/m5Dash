@@ -156,7 +156,16 @@ esp_err_t Rx8130::readUtc(std::tm& out) {
     // corrupted I2C read otherwise turns into a nonsense clock rather than an error.
     if (tm.tm_sec > 59 || tm.tm_min > 59 || tm.tm_hour > 23 || tm.tm_mday < 1 ||
         tm.tm_mday > 31 || tm.tm_mon < 0 || tm.tm_mon > 11) {
-        ESP_LOGW(kTag, "RTC returned an out-of-range date; treating as invalid");
+        // Dump the raw registers, not just the verdict. Without them there is no way to tell
+        // an RTC that has simply never been set (typically all zeros, which decodes to month 0
+        // and day 0) from a register map or BCD decoding error on our side — and those two
+        // call for completely different fixes.
+        ESP_LOGW(kTag,
+                 "RTC date out of range; treating as invalid. Raw 0x10..0x16 = "
+                 "%02X %02X %02X %02X %02X %02X %02X "
+                 "-> %04d-%02d-%02d %02d:%02d:%02d",
+                 raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], tm.tm_year + 1900,
+                 tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
         time_valid_ = false;
         return ESP_ERR_INVALID_RESPONSE;
     }

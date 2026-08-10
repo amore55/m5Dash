@@ -8,28 +8,46 @@ See [IMPLEMENTATION_PLAN.md §1.1](IMPLEMENTATION_PLAN.md#11-spaces-in-the-proje
 **Remote:** `https://github.com/amore55/m5Dash` — **public**. Branch `main`.
 **Toolchain:** ESP-IDF **v5.4.4** — activate with `. .\scripts\idf_env.ps1` (§1.1).
 
-## ✅ THE BUILD IS GREEN
+## ✅ IT RUNS ON HARDWARE
 
-`idf.py build` exits **0**, with **zero warnings in our own code** (3 warnings total, all from
-third-party managed components).
+The build is green (exit 0, no warnings in our code, ~1.24 MB against a 6 MB OTA slot) **and the
+dashboard is running on the device.**
 
-| | |
+| Verified on hardware | |
 | --- | --- |
-| Application | `build/tab5-desk-dashboard.bin` — 1,265,216 bytes (~1.24 MB) |
-| Fits `ota_0` | 0x600000 (6 MB) — **80 % free**, ample headroom for the five real plugins |
-| Bootloader | 21,120 bytes |
-| Partition table | 3,072 bytes |
-| OTA data | 8,192 bytes |
-| Version stamped | `0.0.0-dev` + git SHA, from the CMake injection — working as designed |
+| Boot, NVS, PSRAM, flash | 16 MB confirmed by `flash_id`; 32 MB PSRAM @ 200 MHz |
+| **Display** | **ST7121 panel, 1280 × 720 landscape** |
+| Backlight + brightness | PWM changes take effect |
+| Touch | 10-point controller enumerates correctly |
+| **Swipe navigation** | **Moves between all five rotation pages** |
+| Boot screen / clock page / placeholders | All render |
+| RTC presence | RX8130CE answers at I²C 0x32 |
 
-This validates, for the first time, everything that was previously written blind: the Tab5 BSP
-dependency set, every LVGL 9 call in the UI, the esp_hosted/esp_wifi_remote pins, the component
-graph, and the partition table.
+### 🔴 The one thing that cost a whole session: **the panel is an ST7121**
 
-**Still unverified: anything requiring the actual device.** Nothing has been flashed or run.
+Espressif's BSP supports ILI9881C and ST7123. It does **not** support the ST7121, and because
+ST7121 and ST7123 share touch I²C address `0x55`, the BSP mis-detects it and initialises the
+wrong panel. **Nothing errors** — every `esp_lcd_*` call returns `ESP_OK`, backlight lights,
+touch works, log is immaculate, screen stays black.
 
-**Resume at [§4.2](#42-componentsdashboard_storage)** — storage, then network, then OTA, then
-the real plugins.
+Full write-up, including the parameters and how to detect it, in
+[IMPLEMENTATION_PLAN.md §3.1](IMPLEMENTATION_PLAN.md#31-the-tab5-has-three-panel-variants-and-the-bsp-only-handles-two).
+
+**Lesson worth keeping: when a display is dark but the log is clean, flash the vendor's own
+firmware early.** That one test proved the hardware good and would have saved hours of
+eliminating my own code.
+
+### ⚠️ Outstanding bug: watchdog reset loop
+
+The device reaches `dashboard running`, then resets ~60 s later with
+`rst:0x7 (HP_SYS_HP_WDT_RESET)`, repeatedly. Seen consistently while the display was still dark,
+so it is a **separate fault** that was deliberately parked to avoid chasing two at once.
+
+**First job next session: confirm whether this still happens now the display works**, then
+`idf.py coredump-info` — a coredump partition is configured and may answer it immediately.
+Details in [IMPLEMENTATION_PLAN.md §10 item 10](IMPLEMENTATION_PLAN.md#10-open-questions--assumptions).
+
+**Then resume at [§4.2](#42-componentsdashboard_storage)** — storage, network, OTA, real plugins.
 
 Read [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) first — it holds the researched
 hardware facts and the design decisions. This file is only "where we stopped and what is
@@ -205,6 +223,11 @@ components/dashboard_core/          ✅ COMPLETE
                                         (Settings) with restore; order/enable; thread-safe
                                         setOnline(); lv_tick_elaps everywhere (49-day wrap)
 
+components/esp_lcd_st7121/           ✅ VENDORED (Apache-2.0, Espressif-authored)
+  CMakeLists.txt                     ✅ carries the full explanation of why it exists
+  esp_lcd_st7121.c                   ✅ from m5stack/M5Tab5-UserDemo, byte-for-byte
+  include/esp_lcd_st7121.h           ✅ delete this component if the BSP ever adds ST7121
+
 plugins/clock/                      ✅ COMPLETE
   CMakeLists.txt                     ✅
   include/plugins/clock_plugin.hpp   ✅
@@ -213,6 +236,24 @@ plugins/clock/                      ✅ COMPLETE
                                         requiresNetwork()=false, only redraws when the displayed
                                         value actually changes
 ```
+
+### Display bring-up decisions — do not undo these
+
+7. **`tab5_board` does the panel bring-up itself.** It does NOT call
+   `bsp_display_start_with_config()`, because that helper hard-codes the ST7123 path and a
+   1000 Mbps DSI lane rate. `Board::init()` instead: detects the panel → creates the DSI bus,
+   panel IO and panel → `lvgl_port_add_disp_dsi()` → `bsp_touch_new()` + `lvgl_port_add_touch()`.
+   This mirrors `bsp_display.c:327-385`; **diff against it if the BSP is ever updated.**
+8. **`detectPanel()` reads the touch firmware-version register**, not just the I²C address.
+   That is the only way to tell ST7121 from ST7123. Do not "simplify" it back to a probe.
+9. **ST7121 uses 965 Mbps and vsync 20/24/200.** ST7123 uses 1000 Mbps and 2/8/220. Both paths
+   are kept so the project works on any Tab5, not just this one.
+10. **`CONFIG_LVGL_PORT_ENABLE_PPA=n` and the cache/XIP options are currently off.** They were
+    disabled while chasing the display fault and are *not* known to be harmful — PPA in
+    particular is a real win (hardware rotation). Re-enable them **one at a time**, testing the
+    display after each, now that there is a known-good baseline.
+11. **The self-test scaffolding is kept but disabled.** `kBootSelfTest` in `app_main.cpp` and
+    `kRotateToLandscape` in `board.cpp` are bisect switches that earned their place. Leave them.
 
 ### Design changes made during implementation — do not re-litigate
 
@@ -620,21 +661,22 @@ make the partition table invalid. This is open question §6 item 1 below.
 
 ### Suggested order on resuming
 
-1. ✅ ~~`dashboard_core`~~ — done.
-2. ✅ ~~`main/`~~ — done.
-3. ✅ ~~Move the repo and get a green build~~ — done.
-4. **`components/dashboard_storage`** (§4.2) — settings and NVS come before everything that
+1. ✅ ~~`dashboard_core`, `main/`, green build, working display~~ — all done.
+2. **Investigate the watchdog reset loop** (top of this file). Cheap and it may already be gone.
+   Flash, leave it running a few minutes, and check. If it resets: `idf.py coredump-info`.
+3. **`components/dashboard_storage`** (§4.2) — settings and NVS come before everything that
    needs configuration, which is everything.
-5. `components/dashboard_network` (§4.3), then `dashboard_ota` (§4.4).
+4. `components/dashboard_network` (§4.3) — Wi-Fi is the next big hardware unknown (the ESP32-C6
+   link is entirely unproven), and it unblocks NTP, which unblocks a genuinely useful clock.
+5. `dashboard_ota` (§4.4).
 6. Real plugins in the order in §4.5: elizabeth_line → weather → todos → claude → settings, then
    the wallpaper lock (§4.5a). Delete each `PlaceholderPlugin` from `app_main.cpp` as its real
    plugin lands.
-7. CI workflows (§4.7), host tests (§4.8), docs (§4.9).
+7. CI workflows (§4.7), host tests (§4.8), remaining docs (§4.9).
 
-**Rebuild after each component**, now that a green baseline exists. A regression caught against
-a known-good build is a five-minute fix; caught three components later it is an afternoon.
+**Build AND flash after each component.** There is now a known-good baseline on real hardware,
+which is worth far more than a green build alone. A regression caught immediately is a
+five-minute fix; caught three components later it is an evening.
 
-**Worth doing early, out of order:** flash the current firmware to the Tab5. It would close the
-biggest remaining unknowns at once — panel revision, whether software rotation to 1280x720 is
-fast enough, whether the gesture thresholds feel right, and the actual flash size (§6 item 1).
-The clock page is real, not a placeholder, so there is something meaningful to look at.
+**Re-enable the parked optimisations** (§ "Display bring-up decisions", item 10) once things are
+stable — one at a time, checking the display after each.

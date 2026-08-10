@@ -22,6 +22,8 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nvs_flash.h"
 
 #include "app_config.hpp"
@@ -81,6 +83,65 @@ esp_err_t initialiseNvs() {
     return err;
 }
 
+// ---------------------------------------------------------------------------------------
+// TEMPORARY BRING-UP DIAGNOSTIC — remove once the display is confirmed working.
+//
+// The dashboard theme is deliberately near-black (#0B0D10), which is indistinguishable from
+// a dead panel. This paints two unmistakable full-screen colours before any of our UI code
+// runs, which splits a blank screen into two very different problems:
+//
+//   Colours visible  -> panel, backlight, LVGL task, flush path and rotation all work, and
+//                       the fault is in the page/theme code.
+//   Nothing visible  -> the fault is below that: backlight, DSI, or the flush/rotation path.
+//
+// Also forces the backlight to 100% for the duration, so brightness cannot be a confounder.
+// ---------------------------------------------------------------------------------------
+// Off now that the display is confirmed working. Kept rather than deleted because it earned
+// its place: during bring-up it was the test that proved the LVGL flush path independently of
+// the page/theme code, at a point when a healthy boot log and a black screen looked identical.
+// Flip to true if display output ever regresses.
+constexpr bool kBootSelfTest = false;
+constexpr uint32_t kSelfTestHoldMs = 2000;
+
+void runDisplaySelfTest(tab5::Board& board) {
+    if (!kBootSelfTest) {
+        return;
+    }
+    ESP_LOGW(kTag, "display self-test: expect RED then GREEN full screen for %" PRIu32 " ms each",
+             kSelfTestHoldMs);
+
+    board.backlight().setTemporary(100);
+
+    lv_obj_t* panel = nullptr;
+    {
+        tab5::LvglLock lock;
+        panel = lv_obj_create(lv_screen_active());
+        lv_obj_remove_style_all(panel);
+        lv_obj_set_size(panel, LV_PCT(100), LV_PCT(100));
+        lv_obj_align(panel, LV_ALIGN_TOP_LEFT, 0, 0);
+        lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(panel, lv_color_hex(0xFF0000), LV_PART_MAIN);
+        ESP_LOGW(kTag, "self-test: screen is %" PRId32 "x%" PRId32,
+                 lv_obj_get_width(lv_screen_active()), lv_obj_get_height(lv_screen_active()));
+    }
+    // Lock released so the LVGL task can actually render before we change anything.
+    vTaskDelay(pdMS_TO_TICKS(kSelfTestHoldMs));
+
+    {
+        tab5::LvglLock lock;
+        lv_obj_set_style_bg_color(panel, lv_color_hex(0x00FF00), LV_PART_MAIN);
+    }
+    vTaskDelay(pdMS_TO_TICKS(kSelfTestHoldMs));
+
+    {
+        tab5::LvglLock lock;
+        lv_obj_delete(panel);
+    }
+    // Put brightness back under the normal day/night policy.
+    board.backlight().applyNightMode(false);
+    ESP_LOGW(kTag, "display self-test complete");
+}
+
 /// Minimal splash shown while the rest of the system comes up. Returns the object so it can be
 /// removed once the real pages exist. Caller must hold the LVGL lock.
 lv_obj_t* showBootScreen() {
@@ -129,6 +190,10 @@ extern "C" void app_main(void) {
     // way to report anything to the user, and no way to run a setup portal they can see.
     tab5::Board& board = tab5::Board::instance();
     ESP_ERROR_CHECK(board.init());
+
+    // TEMPORARY: proves the panel/backlight/flush/rotation path independently of our UI code.
+    // Delete this call and runDisplaySelfTest() once the display is confirmed working.
+    runDisplaySelfTest(board);
 
     lv_obj_t* boot_screen = nullptr;
     {

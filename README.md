@@ -12,24 +12,44 @@ a long press, outside the normal rotation.
 
 ---
 
-## ⚠️ Status: early. Read this before expecting it to work.
+## ⚠️ Status: early, but it runs on real hardware
 
-The foundation is complete and **compiles cleanly** for the ESP32-P4. Most of the integrations
-are not written yet, and **nothing has ever been run on hardware.**
+The foundation is complete, compiles cleanly, and **boots on a Tab5 with a working display and
+touch navigation.** Most integrations are not written yet.
 
 | Area | State |
 | --- | --- |
-| Build system, partitions, versioning | ✅ Done — `idf.py build` exits 0, no warnings in project code |
-| Board bring-up (display, touch, LVGL, backlight, RTC) | ✅ Written, **never run on a device** |
-| Plugin framework, page manager, gestures, theme | ✅ Done |
-| **Clock page** | ✅ Real, working code |
+| Build system, partitions, versioning | ✅ `idf.py build` exits 0, no warnings in project code |
+| Board bring-up (display, touch, LVGL, backlight) | ✅ **Verified on hardware** |
+| Plugin framework, page manager, gestures, theme | ✅ Done; **swipe navigation verified** |
+| **Clock page** | ✅ Real, renders on device |
+| RTC | ⚠️ Detected; never date-set, so falls back to network time |
 | Weather · Elizabeth line · To-dos · Claude · Settings | 🔲 Placeholder pages only |
-| Wi-Fi, NTP, first-run setup portal | 🔲 Not started |
+| Wi-Fi, NTP, first-run setup portal | 🔲 Not started — the ESP32-C6 link is unproven |
 | Storage (settings, tasks, cache) | 🔲 Not started |
 | OTA updates | 🔲 Architecture and partitions ready, service not written |
 | CI workflows, host unit tests | 🔲 Not started |
+| **Known bug** | ⚠️ Watchdog reset loop ~60 s after boot — under investigation |
 
 Current build: **~1.24 MB**, against a 6 MB OTA slot — 80 % free.
+
+### 🔴 If your Tab5's screen stays black, read this first
+
+**M5Stack ship three different display panels, and Espressif's BSP only supports two of them.**
+The **ST7121** is mis-detected as an ST7123 because they share a touch I²C address, and it is
+then initialised with the wrong command sequence and video timings.
+
+The failure is silent and deeply misleading: every `esp_lcd_*` call returns `ESP_OK`, the
+backlight lights, the touch controller enumerates perfectly, the boot log is immaculate — and the
+screen stays dark. Even the DSI *hardware* test pattern shows nothing, because it goes out
+through the same PHY the panel never locked onto.
+
+This project detects all three panels properly and vendors the ST7121 driver, so it should just
+work. Full explanation, parameters and diagnosis method:
+[`docs/IMPLEMENTATION_PLAN.md §3.1`](docs/IMPLEMENTATION_PLAN.md).
+
+**General lesson:** when a display is dark but the log is clean, flash the vendor's own firmware
+early. It proves the hardware in one step and saves hours of eliminating your own code.
 
 Work in progress is tracked in [`docs/BACKLOG.md`](docs/BACKLOG.md), which is the file to read if
 you are picking this up cold.
@@ -215,11 +235,14 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 ## Known limitations
 
-1. **Nothing has been run on hardware.** The firmware compiles and links for esp32p4. That proves
-   nothing about display output, touch, the RTC, the ESP32-C6 Wi-Fi link, or whether software
-   rotation to 1280 × 720 is fast enough.
-2. **Flash size is assumed, not confirmed.** `partitions.csv` assumes 16 MB. Run
-   `esptool.py --chip esp32p4 -p COM7 flash_id` before trusting it.
+1. **A watchdog reset loop is outstanding.** The device reaches `dashboard running` and then
+   resets ~60 s later (`rst:0x7 (HP_SYS_HP_WDT_RESET)`). Under investigation.
+2. **Wi-Fi is entirely unproven.** The ESP32-C6 link is not implemented yet, and the retail C6
+   must be running an `esp-hosted` slave image compatible with the pinned host component.
+3. **The RTC has never been date-set.** It runs, but returns an invalid date, so the clock waits
+   for network time. Should resolve once SNTP writes a real time back to it.
+4. **Hardware acceleration is currently off.** `CONFIG_LVGL_PORT_ENABLE_PPA=n` and some cache /
+   XIP options were disabled while diagnosing the display and have not been re-enabled.
 3. **Large fonts are scaled, not native.** LVGL's built-in Montserrat stops at 48 px, so the
    clock's hero digits are enlarged with an LVGL transform and are slightly soft. A script to
    generate a crisp 160 px face from a redistributable font is planned.

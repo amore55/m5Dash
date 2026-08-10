@@ -35,6 +35,21 @@ Directly declared in [`main/idf_component.yml`](main/idf_component.yml):
 | `espressif/esp_wifi_remote` | 0.8.5 | Apache-2.0 |
 | `joltwallet/littlefs` | 1.22.3 | MIT (© Brian Pugh) — wraps upstream [littlefs](https://github.com/littlefs-project/littlefs), BSD-3-Clause |
 
+### Vendored, not resolved by the component manager
+
+| Component | Location | Licence |
+| --- | --- | --- |
+| `esp_lcd_st7121` | `components/esp_lcd_st7121/` | Apache-2.0 — *SPDX-FileCopyrightText: 2024-2025 Espressif Systems (Shanghai) CO LTD* |
+
+Sitronix ST7121 MIPI-DSI panel driver. Authored by Espressif but **not published to the ESP
+Component Registry**, so it is copied byte-for-byte from
+[m5stack/M5Tab5-UserDemo](https://github.com/m5stack/M5Tab5-UserDemo)
+(`platforms/tab5/components/esp_lcd_st7121`).
+
+It is required because Espressif's Tab5 BSP does not support the ST7121 panel fitted to some
+retail units — see [`docs/IMPLEMENTATION_PLAN.md §3.1`](docs/IMPLEMENTATION_PLAN.md). Delete this
+component if the upstream BSP ever gains ST7121 support.
+
 Pulled in transitively, mostly as public dependencies of the Tab5 BSP:
 
 | Component | Licence |
