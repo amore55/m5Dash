@@ -30,8 +30,10 @@
 #include "app_config.hpp"
 #include "version.hpp"
 
+#include "dashboard/net/wifi_manager.hpp"
 #include "dashboard/page_manager.hpp"
 #include "dashboard/storage/cache_store.hpp"
+#include "dashboard/storage/secret_store.hpp"
 #include "dashboard/storage/fs.hpp"
 #include "dashboard/storage/settings_store.hpp"
 #include "dashboard/storage/task_store.hpp"
@@ -82,6 +84,7 @@ dashboard::PageManager g_pages;
 dashboard::storage::SettingsStore g_settings_store;
 dashboard::storage::Settings g_settings;
 dashboard::storage::TaskStore g_tasks;
+dashboard::net::WifiManager g_wifi;
 
 /// Split a comma-separated list into pointers into `scratch`, which is modified in place.
 /// Returns how many entries were produced.
@@ -434,6 +437,35 @@ extern "C" void app_main(void) {
     }
 
     startHealthTimer();
+
+    // ---- Wi-Fi ------------------------------------------------------------------------
+    //
+    // Deliberately last: the dashboard is useful without it, and bringing the radio up after
+    // the UI means a slow or failing ESP32-C6 delays nothing the user can see.
+    //
+    // Not fatal either. A device that cannot reach its radio still shows the clock, and the
+    // setup portal is the recovery path for missing credentials.
+    if (g_wifi.begin() == ESP_OK) {
+        g_wifi.setStateCallback([](dashboard::net::WifiState state, bool online) {
+            ESP_LOGI(kTag, "network state: %s", dashboard::net::toString(state));
+            // Runs on the system event task. PageManager::setOnline() is explicitly safe to
+            // call from another thread and defers the work to the LVGL tick.
+            g_pages.setOnline(online);
+        });
+
+        if (g_settings.provisioned()) {
+            dashboard::storage::ScopedSecret password;
+            password.load(dashboard::storage::Secret::WifiPassword);
+            g_wifi.connect(g_settings.wifi_ssid.c_str(), password.c_str());
+        } else {
+            // No credentials yet. A scan is the cheapest end-to-end proof that the ESP32-C6
+            // link works, and it produces the network list the setup portal will need.
+            ESP_LOGW(kTag, "no Wi-Fi credentials stored; first-run setup is required");
+            g_wifi.scanAndLog();
+        }
+    } else {
+        ESP_LOGE(kTag, "Wi-Fi unavailable; running offline");
+    }
 
     ESP_LOGI(kTag, "dashboard running; free heap: %" PRIu32 " bytes", esp_get_free_heap_size());
 

@@ -158,6 +158,23 @@ CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=40000
 CONFIG_ESP_HOSTED_SDIO_PIN_CMD=13
 CONFIG_ESP_HOSTED_SDIO_PIN_CLK=12
 CONFIG_ESP_HOSTED_SDIO_PIN_D0=11
+# D1 IS SPECIAL AND MUST BE SET VIA THE _PRIV_ SYMBOL.
+#
+# ESP_HOSTED_SDIO_PIN_D1 is declared in esp_hosted's Kconfig as a bare `int` with NO prompt —
+# it is a derived symbol whose value comes from ESP_HOSTED_SDIO_PRIV_PIN_D1_4BIT_BUS (or the
+# 1-bit equivalent). Setting CONFIG_ESP_HOSTED_SDIO_PIN_D1 here is therefore SILENTLY IGNORED,
+# and D1 falls back to its ESP32-P4 default of 15 — which is also the slave reset pin.
+#
+# The result is a pin collision that presents as an SDIO enumeration failure and an abort inside
+# hosted_sdio_card_fn_init(), i.e. a boot loop:
+#
+#   sdio_wrapper: GPIOs: CLK[12] CMD[13] D0[11] D1[15] D2[9] D3[8] Slave_Reset[15]
+#   sdmmc_io: sdmmc_io_rw_extended: sdmmc_send_cmd returned 0xffffffff
+#   sdio_wrapper: failed to get CIS data.
+#
+# Both keys are set: the _PRIV_ one because it is what actually takes effect, and the derived
+# one for documentation and so a diff against M5Stack's configuration matches.
+CONFIG_ESP_HOSTED_SDIO_PRIV_PIN_D1_4BIT_BUS=10
 CONFIG_ESP_HOSTED_SDIO_PIN_D1=10
 CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
 CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
