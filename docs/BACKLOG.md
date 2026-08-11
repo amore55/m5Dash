@@ -326,7 +326,26 @@ until they exist.
 | `include/dashboard/gesture_detector.hpp` + `src/gesture_detector.cpp` | 30 ms `lv_timer` polling `lv_indev_get_state`/`lv_indev_get_point` — **not** `LV_EVENT_GESTURE`, because widget hit-testing swallows it. Emits SwipeLeft/SwipeRight/SwipeDown/LongPress. Uses the thresholds already defined in `config/app_config.hpp`. Calls `lv_indev_reset()` when a gesture fires so an in-progress widget press is cancelled. |
 | `include/dashboard/page_manager.hpp` + `src/page_manager.cpp` | Registers plugins, creates **all** pages once up front (toggle `LV_OBJ_FLAG_HIDDEN`, so repeated navigation cannot leak), order/enable/default-page from settings, dot indicator, 140 ms fade transition, single 250 ms `lv_timer` driving every plugin's `tick()` + interval-based `refresh(false)`, Settings shown as an overlay that restores the previous page. Implements `PageHost`. |
 
-### 4.2 `components/dashboard_storage`
+### 4.2 `components/dashboard_storage` — ✅ **DONE and verified on hardware**
+
+| File | What it does |
+| --- | --- |
+| `settings.hpp` / `.cpp` | Every user-configurable value, no heap, **no secrets**. `clampToValidRanges()` so corrupt NVS cannot produce an impossible UI state. |
+| `settings_migrate.*` | Versioned schema with a migration chain. Newer-than-known schema (OTA rollback) keeps values rather than resetting them. Host-testable. |
+| `settings_store.*` | NVS, **one key per field** — adding a field needs no migration, and one bad entry loses one setting rather than the lot. Persists defaults on first boot so the schema gets stamped. |
+| `secret_store.*` | Separate NVS namespace. Values never logged (`describe()` reports presence and length only), `ScopedSecret` zeroes on scope exit, lock PIN stored as salted SHA-256 with constant-time compare. |
+| `fs.*` | LittleFS mount (formats if unmountable), `writeAtomic()` = temp + fsync + rename, refuses to write below 10 % free. |
+| `task_store.*` | Bounded to `kMaxTasks`, **upsert by id** so replaying a Telegram `update_id` is idempotent, atomic whole-file rewrite, mutex-guarded. A corrupt file starts empty and is left on disk for recovery. |
+| `cache_store.*` | One file per key under `/store/cache/`, key validation as a path-traversal guard, exposes entry age so the UI can say "data from 3 hours ago". |
+
+**Verified on device:** partition formats on first use, mounts cleanly thereafter (3072 KB, 99 % free),
+settings round-trip across reboots with the schema stamped, task store starts empty and loads.
+
+Wired into `app_main`: filesystem mount is non-fatal, settings drive timezone / brightness /
+clock face / page order / enabled pages, and the dim schedule is evaluated on the 30 s timer.
+
+<details>
+<summary>Original plan for this section</summary>
 
 `settings.hpp` (POD struct of `FixedString`s + a `schema` version), `settings_store.{hpp,cpp}`
 (NVS namespaces `dash.cfg` / `dash.sec` / `dash.state`, secrets segregated, `factoryReset()`),
@@ -335,7 +354,9 @@ until they exist.
 created_at/due_at/completed_at/source), `task_store.{hpp,cpp}` (bounded to
 `cfg::kMaxTasks`, atomic rewrite), `cache_store.{hpp,cpp}`.
 
-### 4.3 `components/dashboard_network`
+</details>
+
+### 4.3 `components/dashboard_network` ← **RESUME HERE**
 
 `wifi_manager` (STA + SoftAP, event-driven, exponential backoff, observable online/offline),
 `time_sync` (SNTP → RX8130CE write on every success), `https_client` (esp_crt_bundle,

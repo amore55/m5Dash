@@ -31,6 +31,10 @@
 #include "version.hpp"
 
 #include "dashboard/page_manager.hpp"
+#include "dashboard/storage/cache_store.hpp"
+#include "dashboard/storage/fs.hpp"
+#include "dashboard/storage/settings_store.hpp"
+#include "dashboard/storage/task_store.hpp"
 #include "dashboard/theme.hpp"
 #include "dashboard/time_utils.hpp"
 #include "tab5_board/board.hpp"
@@ -68,12 +72,88 @@ dash::PlaceholderPlugin g_claude{"claude", "Claude usage",
                                  "Five-hour and weekly allowance with a locally calculated "
                                  "countdown to reset. Experimental - see docs/CLAUDE_USAGE.md."};
 
-dash::PlaceholderPlugin g_settings{"settings", "Settings",
+dash::PlaceholderPlugin g_settings_page{"settings", "Settings",
                                    "Wi-Fi, location, integrations, display and firmware "
                                    "updates. Opened with a long press, outside the page "
                                    "rotation."};
 
 dashboard::PageManager g_pages;
+
+dashboard::storage::SettingsStore g_settings_store;
+dashboard::storage::Settings g_settings;
+dashboard::storage::TaskStore g_tasks;
+
+/// Split a comma-separated list into pointers into `scratch`, which is modified in place.
+/// Returns how many entries were produced.
+size_t splitCsv(const char* csv, char* scratch, size_t scratch_size, const char** out,
+                size_t max_entries) {
+    if (csv == nullptr || scratch == nullptr || out == nullptr) {
+        return 0;
+    }
+    std::snprintf(scratch, scratch_size, "%s", csv);
+    size_t count = 0;
+    char* cursor = scratch;
+    while (*cursor != '\0' && count < max_entries) {
+        while (*cursor == ' ' || *cursor == ',') {
+            ++cursor;
+        }
+        if (*cursor == '\0') {
+            break;
+        }
+        out[count++] = cursor;
+        while (*cursor != '\0' && *cursor != ',') {
+            ++cursor;
+        }
+        if (*cursor == ',') {
+            *cursor++ = '\0';
+        }
+    }
+    return count;
+}
+
+/// Push the stored page order and enabled flags into PageManager.
+///
+/// Also registered as PageManager's configuration loader, so the Settings page can change the
+/// order and have it take effect without a restart.
+void applyPageConfiguration() {
+    char scratch[192];
+    const char* ids[dashboard::PageManager::kMaxPlugins];
+    const size_t count = splitCsv(g_settings.page_order.c_str(), scratch, sizeof(scratch), ids,
+                                  dashboard::PageManager::kMaxPlugins);
+    if (count > 0) {
+        g_pages.setOrder(ids, count);
+    }
+
+    // Enabled flags are applied per plugin. An empty enabled_pages list means "all", which
+    // Settings::pageEnabled() already handles.
+    static const char* const kRotationIds[] = {"clock", "weather", "elizabeth", "todos", "claude"};
+    for (const char* id : kRotationIds) {
+        g_pages.setEnabled(id, g_settings.pageEnabled(id));
+    }
+}
+
+/// Apply settings that belong to hardware or to a specific plugin.
+void applySettings(tab5::Board& board) {
+    dashboard::timeutil::setTimezone(g_settings.timezone.c_str());
+
+    board.backlight().configure(g_settings.brightness_percent,
+                                g_settings.night_brightness_percent);
+
+    g_clock.setFace(plugins::clockFaceFromString(g_settings.clock_style.c_str()));
+    g_clock.setShowSeconds(g_settings.show_seconds);
+}
+
+/// Evaluate the dim schedule and apply it. Cheap, and only touches the panel when the level
+/// actually changes, so it is safe to call from a slow periodic timer.
+void applyDimSchedule() {
+    const int minutes = dashboard::timeutil::localMinutesSinceMidnight();
+    if (minutes < 0) {
+        return;  // clock not set yet; leave brightness alone
+    }
+    const bool night = dashboard::timeutil::inTimeWindow(minutes, g_settings.dim_start_minutes,
+                                                         g_settings.dim_end_minutes);
+    tab5::Board::instance().backlight().applyNightMode(night);
+}
 
 /// Report why the device last restarted.
 ///
@@ -144,6 +224,11 @@ void healthTimerCb(void*) {
     ESP_LOGI(kTag, "health: uptime %llu s, free heap %" PRIu32 " B, min free ever %" PRIu32 " B",
              esp_timer_get_time() / 1000000ULL, esp_get_free_heap_size(),
              esp_get_minimum_free_heap_size());
+
+    // The dim schedule rides along on this timer rather than owning one. 30 s granularity is
+    // imperceptible for a brightness change that happens twice a day, and one fewer timer is
+    // one fewer thing to reason about.
+    applyDimSchedule();
 }
 
 void startHealthTimer() {
@@ -289,9 +374,23 @@ extern "C" void app_main(void) {
         boot_screen = showBootScreen();
     }
 
-    // Timezone rules first, then the RTC. Doing it in this order means the restored time is
-    // interpreted with British Summer Time applied from the very first render.
-    dashboard::timeutil::setTimezone(dash::cfg::kDefaultTimezone);
+    // ---- storage --------------------------------------------------------------------
+    //
+    // The filesystem is not fatal: a device that cannot mount LittleFS loses tasks and the
+    // response cache, but the clock, weather and line status all still work. Configuration
+    // lives in NVS and is unaffected either way.
+    if (dashboard::storage::Fs::mount() == ESP_OK) {
+        dashboard::storage::CacheStore::init();
+        g_tasks.load();
+    } else {
+        ESP_LOGW(kTag, "no filesystem: tasks and cached responses are unavailable this boot");
+    }
+
+    g_settings_store.load(g_settings);
+    applySettings(board);
+
+    // Timezone comes from settings now, then the RTC. Doing it in this order means the restored
+    // time is interpreted with British Summer Time applied from the very first render.
     if (board.rtc().attached()) {
         if (board.rtc().restoreSystemTime() != ESP_OK) {
             ESP_LOGW(kTag, "RTC holds no valid time; waiting for network time");
@@ -303,7 +402,7 @@ extern "C" void app_main(void) {
     initialisePlugin(g_elizabeth);
     initialisePlugin(g_todos);
     initialisePlugin(g_claude);
-    initialisePlugin(g_settings);
+    initialisePlugin(g_settings_page);
 
     {
         tab5::LvglLock lock;
@@ -317,10 +416,15 @@ extern "C" void app_main(void) {
         ESP_ERROR_CHECK(g_pages.add(&g_elizabeth, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_todos, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_claude, /*in_rotation=*/true));
-        ESP_ERROR_CHECK(g_pages.add(&g_settings, /*in_rotation=*/false));
+        ESP_ERROR_CHECK(g_pages.add(&g_settings_page, /*in_rotation=*/false));
         g_pages.setOverlayPageId("settings");
 
-        ESP_ERROR_CHECK(g_pages.startPages("clock"));
+        // Order and enabled flags come from stored settings; the loader lets the Settings page
+        // re-apply them later without a restart.
+        g_pages.setConfigurationLoader(&applyPageConfiguration);
+        applyPageConfiguration();
+
+        ESP_ERROR_CHECK(g_pages.startPages(g_settings.default_page.c_str()));
 
         // Remove the splash only once a real page is on screen, so there is never a frame of
         // empty background between the two.

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <cstddef>  // size_t — used below; do not rely on another header pulling it in
 #include <cstdint>
 
 namespace dash::cfg {
