@@ -29,7 +29,7 @@ touch navigation.** Most integrations are not written yet.
 | Storage (settings, tasks, cache) | 🔲 Not started |
 | OTA updates | 🔲 Architecture and partitions ready, service not written |
 | CI workflows, host unit tests | 🔲 Not started |
-| **Known bug** | ⚠️ Watchdog reset loop ~60 s after boot — under investigation |
+| Stability | ✅ Runs for minutes with flat heap; boot reset-reason + 30 s health reporting |
 
 Current build: **~1.24 MB**, against a 6 MB OTA slot — 80 % free.
 
@@ -235,12 +235,11 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 
 ## Known limitations
 
-1. **A watchdog reset loop is outstanding.** The device reaches `dashboard running` and then
-   resets ~60 s later (`rst:0x7 (HP_SYS_HP_WDT_RESET)`). Under investigation.
-2. **Wi-Fi is entirely unproven.** The ESP32-C6 link is not implemented yet, and the retail C6
+1. **Wi-Fi is entirely unproven.** The ESP32-C6 link is not implemented yet, and the retail C6
    must be running an `esp-hosted` slave image compatible with the pinned host component.
-3. **The RTC has never been date-set.** It runs, but returns an invalid date, so the clock waits
-   for network time. Should resolve once SNTP writes a real time back to it.
+2. **The RTC has never been date-set.** It runs, but reports `2080-01-01`, which the driver
+   rejects as implausible — so the clock waits for network time rather than showing a wrong
+   date. Resolves once SNTP writes a real time back to it.
 4. **Hardware acceleration is currently off.** `CONFIG_LVGL_PORT_ENABLE_PPA=n` and some cache /
    XIP options were disabled while diagnosing the display and have not been re-enabled.
 3. **Large fonts are scaled, not native.** LVGL's built-in Montserrat stops at 48 px, so the

@@ -23,6 +23,20 @@ constexpr int kI2cTimeoutMs = 200;
 /// The RX8130CE stores the year as an offset from 2000.
 constexpr int kRtcEpochYear = 2000;
 
+/// Plausible calendar window for a stored time, used to reject a chip that is running but was
+/// never set.
+///
+/// A range check on the individual fields is not enough. An unset RX8130CE on this board reports
+/// seconds and minutes ticking normally, month 1, and **year 80** — which decodes to a perfectly
+/// well-formed 2080-01-01. That passes every field-level check and would be pushed into the
+/// system clock, at which point the dashboard confidently displays a date 54 years out instead
+/// of admitting it does not know the time. Showing a wrong time is worse than showing none.
+///
+/// The lower bound is deliberately after this project existed; the upper bound is far enough out
+/// to be useless as a real date but close enough to catch the unset-chip pattern.
+constexpr int kMinPlausibleYear = 2024;
+constexpr int kMaxPlausibleYear = 2064;
+
 uint8_t toBcd(int value) {
     return static_cast<uint8_t>(((value / 10) << 4) | (value % 10));
 }
@@ -154,18 +168,21 @@ esp_err_t Rx8130::readUtc(std::tm& out) {
 
     // Range-check before handing the value to anything that will do arithmetic on it. A
     // corrupted I2C read otherwise turns into a nonsense clock rather than an error.
+    const int year = tm.tm_year + 1900;
     if (tm.tm_sec > 59 || tm.tm_min > 59 || tm.tm_hour > 23 || tm.tm_mday < 1 ||
-        tm.tm_mday > 31 || tm.tm_mon < 0 || tm.tm_mon > 11) {
+        tm.tm_mday > 31 || tm.tm_mon < 0 || tm.tm_mon > 11 || year < kMinPlausibleYear ||
+        year > kMaxPlausibleYear) {
         // Dump the raw registers, not just the verdict. Without them there is no way to tell
         // an RTC that has simply never been set (typically all zeros, which decodes to month 0
         // and day 0) from a register map or BCD decoding error on our side — and those two
         // call for completely different fixes.
         ESP_LOGW(kTag,
-                 "RTC date out of range; treating as invalid. Raw 0x10..0x16 = "
-                 "%02X %02X %02X %02X %02X %02X %02X "
+                 "RTC date implausible (expected %d..%d); treating as unset. "
+                 "Raw 0x10..0x16 = %02X %02X %02X %02X %02X %02X %02X "
                  "-> %04d-%02d-%02d %02d:%02d:%02d",
-                 raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], tm.tm_year + 1900,
-                 tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+                 kMinPlausibleYear, kMaxPlausibleYear, raw[0], raw[1], raw[2], raw[3], raw[4],
+                 raw[5], raw[6], year, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min,
+                 tm.tm_sec);
         time_valid_ = false;
         return ESP_ERR_INVALID_RESPONSE;
     }

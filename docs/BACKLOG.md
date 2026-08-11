@@ -37,17 +37,43 @@ Full write-up, including the parameters and how to detect it, in
 firmware early.** That one test proved the hardware good and would have saved hours of
 eliminating my own code.
 
-### ⚠️ Outstanding bug: watchdog reset loop
+### ✅ Watchdog reset loop — RESOLVED
 
-The device reaches `dashboard running`, then resets ~60 s later with
-`rst:0x7 (HP_SYS_HP_WDT_RESET)`, repeatedly. Seen consistently while the display was still dark,
-so it is a **separate fault** that was deliberately parked to avoid chasing two at once.
+It was collateral from the display fault, not an independent bug. Measured on the device after
+the ST7121 fix: **uptime 182 s in one run and 122 s+ in another**, well past the ~60 s mark where
+it used to die, with **flat heap** (12 bytes of drift over two minutes — noise, not a leak).
 
-**First job next session: confirm whether this still happens now the display works**, then
-`idf.py coredump-info` — a coredump partition is configured and may answer it immediately.
-Details in [IMPLEMENTATION_PLAN.md §10 item 10](IMPLEMENTATION_PLAN.md#10-open-questions--assumptions).
+The most likely original cause was the old panel self-test calling `bsp_display_delete()` and
+re-creating the DSI bus mid-boot; that code is gone.
 
-**Then resume at [§4.2](#42-componentsdashboard_storage)** — storage, network, OTA, real plugins.
+Three diagnostics were added while confirming it, and all are worth keeping:
+
+* `logResetReason()` at boot — turns a silent reboot into a labelled one, and shouts about
+  panics, watchdogs and brownouts specifically.
+* A 30 s health report (uptime / free heap / min-free-ever) — makes a reboot loop obvious within
+  one report, and a slow leak obvious long before it becomes a crash.
+* `CONFIG_ESP_TASK_WDT_PANIC=y` — a task-watchdog timeout now panics with a backtrace and writes
+  a core dump instead of printing a warning. A task that stopped yielding is not recoverable, it
+  is just failing quietly, so trading "recoverable" for "diagnosable" is the right call.
+
+### ✅ Also fixed: RTC reported the year 2080 as valid
+
+The RX8130CE on this unit runs but has never been date-set. Its registers decode to a
+*well-formed* `2080-01-01`, which passed the original field-level range check and was pushed
+straight into the system clock — so the dashboard would have confidently displayed a date 54
+years out instead of admitting it did not know the time.
+
+`readUtc()` now also requires the year to fall in **2024..2064**. Verified on hardware:
+
+```
+W rtc8130: RTC date implausible (expected 2024..2064); treating as unset.
+          Raw 0x10..0x16 = 48 36 00 06 01 01 80 -> 2080-01-01 00:36:48
+```
+
+General lesson worth keeping: **field-level range checks are not plausibility checks.** Every
+individual field here was legal.
+
+**Resume at [§4.2](#42-componentsdashboard_storage)** — storage, network, OTA, real plugins.
 
 Read [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) first — it holds the researched
 hardware facts and the design decisions. This file is only "where we stopped and what is

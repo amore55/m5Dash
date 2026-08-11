@@ -75,6 +75,15 @@ CONFIG_ESP_TASK_WDT_INIT=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=15
 CONFIG_ESP_INT_WDT=y
 
+# PANIC on a task-watchdog timeout rather than just printing a warning and carrying on.
+#
+# A hang that silently resets the device is close to undiagnosable; a hang that panics writes a
+# backtrace to the console AND a core dump to flash, which `idf.py coredump-info` turns into the
+# exact task and line. Trading a "recoverable" warning for a diagnosable crash is the right call
+# on a device that is meant to run unattended for weeks — a task that stopped yielding is not
+# actually recoverable, it is just failing quietly.
+CONFIG_ESP_TASK_WDT_PANIC=y
+
 # ---------------------------------------------------------------------------------------
 # Bootloader / OTA / rollback
 #

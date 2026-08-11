@@ -538,18 +538,15 @@ running on the actual device.**
    are all constants in `config/app_config.hpp`. Long-press-to-Settings is not yet confirmed by
    observation.
 
-10. ⚠️ **OPEN BUG — watchdog reset loop.** The device reaches `dashboard running` and then
-    resets roughly a minute later with `rst:0x7 (HP_SYS_HP_WDT_RESET)` /
-    `CPU has been reset by WDT`, repeatedly. Observed consistently across several builds while
-    the display was still dark, so it is **not** a display problem and was deliberately left
-    alone to avoid chasing two faults at once. Needs checking now the display works, and needs
-    confirming whether it still happens.
+10. ~~**Watchdog reset loop.**~~ **CLOSED — it was collateral from the display fault.** After the
+    ST7121 fix the device ran to 182 s and 122 s+ across two measured runs, past the ~60 s point
+    where it used to reset, with flat heap. The likely original cause was the temporary panel
+    self-test calling `bsp_display_delete()` and re-creating the DSI bus mid-boot; that code no
+    longer exists.
 
-    Starting points: it is the *system/interrupt* watchdog rather than an obvious task hang;
-    prime suspects are the LVGL task, a plugin `Worker`, or the periodic `PageManager` tick.
-    `CONFIG_ESP_TASK_WDT_TIMEOUT_S` is 15 and `CONFIG_ESP_INT_WDT` is on. A core dump partition
-    exists and is configured, so `idf.py coredump-info` after a reset may go straight to the
-    answer.
+    Diagnostics added while confirming it, and kept: `logResetReason()` at boot, a 30 s
+    uptime/heap health report, and `CONFIG_ESP_TASK_WDT_PANIC=y` so a future task hang produces a
+    backtrace and a core dump rather than a silent reset.
 
 11. **Brownout.** `E BOD: Brownout detector was triggered` was seen once during early display
     bring-up. Not seen since, but worth remembering if instability appears — the panel at full
@@ -580,11 +577,13 @@ running on the actual device.**
 * **Still unverified on hardware:** Wi-Fi / the ESP32-C6 link (not yet implemented),
   long-press-to-Settings, gesture *feel*, rotation throughput, dimming schedule, burn-in nudge,
   and every integration.
-* **The RTC is running but has never been date-set.** It reports its "data valid" flag clear,
-  yet returns nonsense dates (day 0, year 80) — raw registers logged. The driver correctly
-  rejects them and falls back to waiting for network time. Once SNTP lands, writing a real time
-  back to the RTC should close this.
-* ⚠️ **A watchdog reset loop is outstanding** — see §10 item 10.
+* **The RTC is running but has never been date-set.** It reports its "data valid" flag clear
+  while returning `2080-01-01` — a *well-formed* date that passed the original field-level range
+  check and was pushed into the system clock. `readUtc()` now also enforces a plausible year
+  window (2024..2064) and rejects it, so the dashboard waits for network time instead of
+  displaying a date 54 years out. **Field-level range checks are not plausibility checks.**
+  Writing a real time back after the first SNTP sync should close this properly.
+* ~~A watchdog reset loop is outstanding~~ — closed, see §10 item 10.
 * **No host-side compilation.** There is still no host C/C++ compiler on this machine, and
   ESP-IDF does not supply one. The host unit tests are compiled for the first time by GitHub
   Actions on Ubuntu.

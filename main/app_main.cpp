@@ -22,6 +22,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "nvs_flash.h"
@@ -40,6 +41,10 @@
 namespace {
 
 constexpr const char* kTag = "app";
+
+/// How often the liveness/heap report is printed. 30 s is frequent enough to spot a reboot
+/// loop within one report, and rare enough not to clutter the log.
+constexpr uint64_t kHealthReportPeriodUs = 30ULL * 1000ULL * 1000ULL;
 
 // Statically allocated. Plugins live for the lifetime of the application, so there is no reason
 // to put them on the heap and every reason not to: their footprint is then visible in the
@@ -69,6 +74,87 @@ dash::PlaceholderPlugin g_settings{"settings", "Settings",
                                    "rotation."};
 
 dashboard::PageManager g_pages;
+
+/// Report why the device last restarted.
+///
+/// A silent reboot is the hardest kind of embedded bug to reason about, and the reset reason is
+/// the single cheapest clue available — it distinguishes a clean power-on from a panic, a
+/// watchdog, or a brownout, before any other diagnosis is attempted. Abnormal causes are logged
+/// as warnings so they stand out in a wall of INFO.
+void logResetReason() {
+    const esp_reset_reason_t reason = esp_reset_reason();
+    const char* text = "unknown";
+    bool abnormal = true;
+
+    switch (reason) {
+        case ESP_RST_POWERON:
+            text = "power-on";
+            abnormal = false;
+            break;
+        case ESP_RST_SW:
+            text = "software restart (esp_restart)";
+            abnormal = false;
+            break;
+        case ESP_RST_DEEPSLEEP:
+            text = "wake from deep sleep";
+            abnormal = false;
+            break;
+        case ESP_RST_USB:
+            text = "USB peripheral reset (normal after flashing)";
+            abnormal = false;
+            break;
+        case ESP_RST_PANIC:
+            text = "PANIC or unhandled exception";
+            break;
+        case ESP_RST_INT_WDT:
+            text = "INTERRUPT watchdog - interrupts were disabled too long";
+            break;
+        case ESP_RST_TASK_WDT:
+            text = "TASK watchdog - a task did not yield";
+            break;
+        case ESP_RST_WDT:
+            text = "other watchdog (system/RTC)";
+            break;
+        case ESP_RST_BROWNOUT:
+            text = "BROWNOUT - supply voltage dipped; suspect the USB port or cable";
+            break;
+        case ESP_RST_EXT:
+            text = "external reset pin";
+            abnormal = false;
+            break;
+        default:
+            break;
+    }
+
+    if (abnormal) {
+        ESP_LOGW(kTag, "*** last reset: %s (esp_reset_reason=%d) ***", text,
+                 static_cast<int>(reason));
+        ESP_LOGW(kTag, "*** if a core dump was written, read it with: idf.py coredump-info ***");
+    } else {
+        ESP_LOGI(kTag, "last reset: %s", text);
+    }
+}
+
+/// Periodic liveness and memory report.
+///
+/// Two jobs: it makes an unexplained reboot obvious (the uptime counter goes back to zero), and
+/// it makes a slow leak visible long before it becomes a crash. Deliberately infrequent so it
+/// does not bury anything else in the log.
+void healthTimerCb(void*) {
+    ESP_LOGI(kTag, "health: uptime %llu s, free heap %" PRIu32 " B, min free ever %" PRIu32 " B",
+             esp_timer_get_time() / 1000000ULL, esp_get_free_heap_size(),
+             esp_get_minimum_free_heap_size());
+}
+
+void startHealthTimer() {
+    esp_timer_create_args_t args = {};
+    args.callback = &healthTimerCb;
+    args.name = "health";
+    esp_timer_handle_t timer = nullptr;
+    if (esp_timer_create(&args, &timer) == ESP_OK) {
+        esp_timer_start_periodic(timer, kHealthReportPeriodUs);
+    }
+}
 
 esp_err_t initialiseNvs() {
     esp_err_t err = nvs_flash_init();
@@ -183,6 +269,7 @@ void initialisePlugin(dashboard::DashboardPlugin& plugin) {
 extern "C" void app_main(void) {
     ESP_LOGI(kTag, "%s v%s (%s)", dash::kProductName, dash::kAppVersion, dash::kGitSha);
     ESP_LOGI(kTag, "free heap at boot: %" PRIu32 " bytes", esp_get_free_heap_size());
+    logResetReason();
 
     ESP_ERROR_CHECK(initialiseNvs());
 
@@ -241,6 +328,8 @@ extern "C" void app_main(void) {
             lv_obj_delete(boot_screen);
         }
     }
+
+    startHealthTimer();
 
     ESP_LOGI(kTag, "dashboard running; free heap: %" PRIu32 " bytes", esp_get_free_heap_size());
 
