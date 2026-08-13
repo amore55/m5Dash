@@ -22,6 +22,7 @@
 
 #include "lvgl.h"
 
+#include "dashboard/network_indicator.hpp"
 #include "dashboard/plugin.hpp"
 
 namespace dashboard::theme {
@@ -51,6 +52,15 @@ lv_color_t forState(DataState state);
 
 /// An LV_SYMBOL_* glyph for a state, for use alongside or instead of the dot.
 const char* symbolForState(DataState state);
+
+/// Colour and glyph for the header's network icon.
+///
+/// Signal strength is carried by colour, because the built-in symbol font has exactly one Wi-Fi
+/// glyph and no bar variants. The states that actually change what a person should DO — offline,
+/// connecting, setup — get distinct glyphs as well, so the important distinctions do not rest on
+/// colour alone.
+lv_color_t forNetwork(NetworkIndicator indicator);
+const char* symbolForNetwork(NetworkIndicator indicator);
 
 // ---------------------------------------------------------------------------------------
 // Typography
@@ -113,12 +123,25 @@ void setStatusDot(lv_obj_t* dot, DataState state);
 /// A 1 px horizontal separator spanning the parent's width.
 lv_obj_t* makeSeparator(lv_obj_t* parent);
 
+/// Convert a percentage into the fixed-point units applyHeroScale expects.
+///
+/// Use this rather than a bare number. `applyHeroScale(label, 300)` reads unmistakably like
+/// 300 % and is in fact 117 %, which is exactly the mistake the clock plugin shipped with — the
+/// digits rendered at 56 px while the comment beside them claimed 144 px.
+constexpr int32_t heroScalePercent(int32_t percent) { return percent * 256 / 100; }
+
 /// Enlarge a label beyond the largest available font using an LVGL transform.
-/// `scale_256` is fixed-point: 256 = 100 %, 768 = 300 %.
+///
+/// `scale_256` is FIXED-POINT, not a percentage: 256 = 100 %, 768 = 300 %. Prefer
+/// heroScalePercent() at every call site.
 ///
 /// The transform scales the rendered glyph bitmap, so the result is soft at large factors.
 /// Anything above ~400 % will look obviously blurry; that is the point at which generating a
 /// real font (see the file header) becomes worthwhile.
+///
+/// Note that the transform does NOT change the label's laid-out size: LVGL reserves the
+/// untransformed box and draws the enlarged glyphs over it. Parents therefore need padding to
+/// absorb the overflow, or the glyphs are clipped.
 void applyHeroScale(lv_obj_t* label, int32_t scale_256);
 
 /// Register the palette on LVGL's default theme so that stock widgets (keyboard, message box,

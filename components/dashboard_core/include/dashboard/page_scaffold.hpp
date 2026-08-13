@@ -12,6 +12,7 @@
 
 #include "lvgl.h"
 
+#include "dashboard/network_indicator.hpp"
 #include "dashboard/plugin.hpp"
 
 namespace dashboard {
@@ -42,9 +43,16 @@ class PageScaffold {
     /// Header clock, right-aligned. Pass nullptr or "" to hide it.
     void setHeaderClock(const char* text);
 
-    /// Small Wi-Fi glyph next to the header clock. Hidden entirely when online, because a
-    /// permanently-lit "connected" icon is decoration; only the problem state earns pixels.
-    void setOffline(bool offline);
+    /// Small always-visible network glyph at the far right of the header.
+    ///
+    /// This replaced an earlier warning triangle that appeared only when offline, on the
+    /// reasoning that a lit "connected" icon is decoration. In use that turned out to be wrong
+    /// for the opposite reason: with no positive indicator there is no way to tell a connected
+    /// dashboard from one that has silently dropped off, and the pages that need the network
+    /// least — the clock — are exactly the ones that never showed the warning at all.
+    ///
+    /// Cheap to call every tick: it does nothing when the value has not changed.
+    void setNetwork(NetworkIndicator indicator);
 
   private:
     lv_obj_t* root_ = nullptr;
@@ -52,7 +60,11 @@ class PageScaffold {
     lv_obj_t* status_dot_ = nullptr;
     lv_obj_t* title_ = nullptr;
     lv_obj_t* clock_ = nullptr;
-    lv_obj_t* offline_icon_ = nullptr;
+    lv_obj_t* net_icon_ = nullptr;
+
+    /// Last value pushed to net_icon_, so an unchanged tick costs nothing.
+    NetworkIndicator net_shown_ = NetworkIndicator::Offline;
+    bool net_ever_set_ = false;
     lv_obj_t* body_ = nullptr;
     lv_obj_t* footer_ = nullptr;
     lv_obj_t* footer_text_ = nullptr;

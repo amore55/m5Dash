@@ -31,7 +31,9 @@
 #include "app_config.hpp"
 #include "version.hpp"
 
+#include "dashboard/network_indicator.hpp"
 #include "dashboard/net/provisioning.hpp"
+#include "dashboard/net/time_sync.hpp"
 #include "dashboard/net/wifi_manager.hpp"
 #include "dashboard/page_manager.hpp"
 #include "dashboard/storage/cache_store.hpp"
@@ -88,6 +90,7 @@ dashboard::storage::Settings g_settings;
 dashboard::storage::TaskStore g_tasks;
 dashboard::net::WifiManager g_wifi;
 dashboard::net::ProvisioningServer g_portal;
+dashboard::net::TimeSync g_time;
 
 /// Set by the portal when new credentials land, cleared by the supervisor when it acts on them.
 ///
@@ -266,6 +269,62 @@ void startHealthTimer() {
 // ESP32-C6 over SDIO and blocks: a scan takes a couple of seconds, and an esp_timer callback
 // that blocks for that long stalls every other timer in the system.
 
+/// Write the freshly-synced system time back to the battery-backed RTC.
+///
+/// This is the other half of the boot-time restoreSystemTime(): without it the RTC would keep
+/// whatever it was last told and drift, so a boot with no network would show a slowly worsening
+/// lie rather than the right time.
+void persistTimeToRtc() {
+    auto& rtc = tab5::Board::instance().rtc();
+    if (!rtc.attached()) {
+        return;
+    }
+    const esp_err_t err = rtc.persistSystemTime();
+    if (err != ESP_OK) {
+        // Not fatal in any sense that matters: the system clock is correct either way, and the
+        // only cost is a less accurate starting point after the next power cut.
+        ESP_LOGW(kTag, "could not write the synced time to the RTC: %s", esp_err_to_name(err));
+        return;
+    }
+    // Sized for the compiler's worst case, not the realistic one: every field is an int, so
+    // -Werror=format-truncation reasons about six 11-character numbers rather than a date.
+    char stamp[80];
+    const std::tm local = dashboard::timeutil::localNow();
+    std::snprintf(stamp, sizeof(stamp), "%04d-%02d-%02d %02d:%02d:%02d", local.tm_year + 1900,
+                  local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec);
+    ESP_LOGI(kTag, "clock synced and written to the RTC: %s local", stamp);
+}
+
+/// Translate the radio's state into what the header icon should show.
+///
+/// The mapping lives here rather than in dashboard_core because this is the only place that knows
+/// both the WifiState and the RSSI behind it. Signal strength is only meaningful once connected;
+/// every other state is about what the device is doing, not how well.
+void publishNetworkIndicator() {
+    using dashboard::NetworkIndicator;
+    const dashboard::net::WifiState state = g_wifi.state();
+
+    // Checked before Connected, because in AP+STA both can be true and the portal is the more
+    // useful thing to report: it is the one the user might still be looking at.
+    if (g_wifi.apActive()) {
+        dashboard::setNetworkIndicator(NetworkIndicator::SetupPortal);
+        return;
+    }
+    switch (state) {
+        case dashboard::net::WifiState::Connected:
+            dashboard::setNetworkIndicator(dashboard::indicatorForRssi(g_wifi.rssi()));
+            return;
+        case dashboard::net::WifiState::Connecting:
+            dashboard::setNetworkIndicator(NetworkIndicator::Connecting);
+            return;
+        case dashboard::net::WifiState::Idle:
+        case dashboard::net::WifiState::Disconnected:
+        case dashboard::net::WifiState::AccessPoint:
+            break;
+    }
+    dashboard::setNetworkIndicator(NetworkIndicator::Offline);
+}
+
 /// Try the stored credentials once. Safe with the portal up — see WifiManager::connect().
 void attemptStoredConnect(const char* why) {
     if (!g_settings.provisioned()) {
@@ -349,6 +408,11 @@ void wifiSupervisorTask(void*) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(dash::cfg::kWifiSupervisorPeriodMs));
 
+        // Refreshed every tick, not only on state changes: signal strength drifts while the
+        // state stays Connected, and a strength icon that only moves on connect would be worse
+        // than none at all.
+        publishNetworkIndicator();
+
         const dashboard::net::WifiState state = g_wifi.state();
 
         // Connected. Tear the portal down if it is still up — its whole purpose is served.
@@ -357,6 +421,17 @@ void wifiSupervisorTask(void*) {
             portal_idle_ms = 0;
             g_credentials_changed.store(false);
             closeSetupPortal("connected");
+
+            // Started here rather than at boot: SNTP with no route only produces failures that
+            // say nothing about the actual problem. begin() is idempotent, so calling it on every
+            // tick while connected is free after the first.
+            g_time.begin(dash::cfg::kDefaultNtpServer1, dash::cfg::kDefaultNtpServer2);
+
+            // The RTC write happens on this task, not in SNTP's callback, which runs on lwip's
+            // stack — see TimeSync::consumeSyncEvent().
+            if (g_time.consumeSyncEvent()) {
+                persistTimeToRtc();
+            }
             continue;
         }
 
@@ -615,6 +690,9 @@ extern "C" void app_main(void) {
     if (g_wifi.begin() == ESP_OK) {
         g_wifi.setStateCallback([](dashboard::net::WifiState state, bool online) {
             ESP_LOGI(kTag, "network state: %s", dashboard::net::toString(state));
+            // Cheap and atomic, so it is safe to do straight from the event task. The header
+            // picks it up on the next LVGL tick.
+            publishNetworkIndicator();
             // Runs on the system event task. PageManager::setOnline() is explicitly safe to
             // call from another thread and defers the work to the LVGL tick.
             g_pages.setOnline(online);

@@ -45,11 +45,12 @@ void PageScaffold::build(lv_obj_t* parent, const char* title_text) {
 
     makeSpacer(header_);
 
-    offline_icon_ =
-        theme::makeLabel(header_, LV_SYMBOL_WARNING, theme::fontLabel(), theme::warn());
-    lv_obj_add_flag(offline_icon_, LV_OBJ_FLAG_HIDDEN);
-
     clock_ = theme::makeLabel(header_, "", theme::fontBody(), theme::textSecondary());
+
+    // Last, so it sits hard against the right gutter — the corner people already look at on a
+    // phone for exactly this information. fontLabel() rather than fontBody(): small on purpose.
+    net_icon_ = theme::makeLabel(header_, theme::symbolForNetwork(NetworkIndicator::Offline),
+                                 theme::fontLabel(), theme::forNetwork(NetworkIndicator::Offline));
 
     // ---- body -------------------------------------------------------------------------
     body_ = lv_obj_create(root_);
@@ -101,15 +102,19 @@ void PageScaffold::setHeaderClock(const char* text) {
     lv_label_set_text(clock_, text != nullptr ? text : "");
 }
 
-void PageScaffold::setOffline(bool offline) {
-    if (offline_icon_ == nullptr) {
+void PageScaffold::setNetwork(NetworkIndicator indicator) {
+    if (net_icon_ == nullptr) {
         return;
     }
-    if (offline) {
-        lv_obj_remove_flag(offline_icon_, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(offline_icon_, LV_OBJ_FLAG_HIDDEN);
+    // Called for every plugin on every tick, so bail out on the overwhelmingly common case of
+    // nothing having changed rather than invalidating a label sixty times a second.
+    if (net_ever_set_ && indicator == net_shown_) {
+        return;
     }
+    net_shown_ = indicator;
+    net_ever_set_ = true;
+    lv_label_set_text(net_icon_, theme::symbolForNetwork(indicator));
+    lv_obj_set_style_text_color(net_icon_, theme::forNetwork(indicator), LV_PART_MAIN);
 }
 
 }  // namespace dashboard

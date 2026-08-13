@@ -92,6 +92,45 @@ const char* symbolForState(DataState state) {
     return LV_SYMBOL_MINUS;
 }
 
+lv_color_t forNetwork(NetworkIndicator indicator) {
+    switch (indicator) {
+        case NetworkIndicator::Strong:
+            return ok();
+        case NetworkIndicator::Fair:
+            // Neutral, not amber: a workable signal is not a problem, and colouring it as one
+            // would cry wolf on most desks most of the time.
+            return textSecondary();
+        case NetworkIndicator::Weak:
+            return warn();
+        case NetworkIndicator::Connecting:
+            return accent();
+        case NetworkIndicator::SetupPortal:
+            // The one state that wants the user to act, so it gets the interactive colour.
+            return accent();
+        case NetworkIndicator::Offline:
+            break;
+    }
+    return textMuted();
+}
+
+const char* symbolForNetwork(NetworkIndicator indicator) {
+    switch (indicator) {
+        case NetworkIndicator::Strong:
+        case NetworkIndicator::Fair:
+        case NetworkIndicator::Weak:
+            return LV_SYMBOL_WIFI;
+        case NetworkIndicator::Connecting:
+            return LV_SYMBOL_REFRESH;
+        case NetworkIndicator::SetupPortal:
+            return LV_SYMBOL_SETTINGS;
+        case NetworkIndicator::Offline:
+            break;
+    }
+    // Not the Wi-Fi glyph dimmed: "no link" should be a different shape, so it is legible
+    // without relying on the colour being noticed.
+    return LV_SYMBOL_CLOSE;
+}
+
 // ---------------------------------------------------------------------------------------
 // Typography
 // ---------------------------------------------------------------------------------------

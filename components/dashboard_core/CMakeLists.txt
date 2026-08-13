@@ -3,6 +3,7 @@ idf_component_register(
         "src/semver.cpp"
         "src/time_utils.cpp"
         "src/json_util.cpp"
+        "src/network_indicator.cpp"
         "src/theme.cpp"
         "src/page_scaffold.cpp"
         "src/worker.cpp"

@@ -14,13 +14,16 @@ using dashboard::theme::applyHeroScale;
 namespace theme = dashboard::theme;
 namespace timeutil = dashboard::timeutil;
 
-/// Minimal face: 48 px base font at 300 % ≈ 144 px tall digits, which is readable across a
-/// desk. Beyond about 400 % the scaled bitmap becomes obviously soft — see theme.hpp.
-constexpr int32_t kMinimalScale = 300;
+/// Minimal face: 48 px base font at 350 % ≈ 168 px tall digits, readable right across a room.
+///
+/// Kept below 400 %, where the scaled bitmap starts to look obviously soft — see theme.hpp. Note
+/// heroScalePercent(): these were previously bare numbers in fixed-point units, so the digits
+/// drew at 117 % rather than the 300 % the comment claimed.
+constexpr int32_t kMinimalScale = theme::heroScalePercent(350);
 
 /// Flap face: each digit sits in a fixed-width card, which is what makes proportional Montserrat
-/// digits line up like a departure board. 200 % of 48 px ≈ 96 px inside a 120 px card.
-constexpr int32_t kFlapScale = 200;
+/// digits line up like a departure board. 200 % of 48 px ≈ 96 px inside a 180 px card.
+constexpr int32_t kFlapScale = theme::heroScalePercent(200);
 constexpr int32_t kFlapCardWidth = 120;
 constexpr int32_t kFlapCardHeight = 180;
 
@@ -82,17 +85,21 @@ void ClockPlugin::buildMinimalFace(lv_obj_t* parent) {
     lv_obj_set_flex_flow(minimal_root_, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(minimal_root_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
-    // Vertical room for the scaled glyphs: the transform grows the drawn area beyond the
-    // label's laid-out box, and a tight parent would clip it.
-    lv_obj_set_style_pad_row(minimal_root_, theme::kGapXl * 2, LV_PART_MAIN);
-    lv_obj_set_style_pad_ver(minimal_root_, theme::kGapXl * 2, LV_PART_MAIN);
+    // Vertical room for the scaled glyphs: the transform grows the drawn area beyond the label's
+    // laid-out box, and a tight parent would clip it. At 350 % a 48 px line draws 168 px tall,
+    // overflowing about 60 px above and below its box, so the padding has to cover that on both
+    // sides — and the row gap has to keep the overflow off the date underneath it.
+    lv_obj_set_style_pad_row(minimal_root_, theme::kGapXl * 3, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(minimal_root_, theme::kGapXl * 3, LV_PART_MAIN);
 
     minimal_time_ =
         theme::makeLabel(minimal_root_, kUnknownTime, theme::fontHero(), theme::textPrimary());
     applyHeroScale(minimal_time_, kMinimalScale);
 
-    minimal_date_ = theme::makeLabel(minimal_root_, "", theme::fontTitle(),
-                                     theme::textSecondary());
+    // fontDisplay() rather than fontTitle(): 40 px against 168 px digits, so the date still reads
+    // as secondary but is legible from where the time is.
+    minimal_date_ =
+        theme::makeLabel(minimal_root_, "", theme::fontDisplay(), theme::textSecondary());
 }
 
 void ClockPlugin::buildFlapFace(lv_obj_t* parent) {
@@ -155,7 +162,7 @@ void ClockPlugin::buildFlapFace(lv_obj_t* parent) {
     makeCard(flap_seconds_group_, 4);
     makeCard(flap_seconds_group_, 5);
 
-    flap_date_ = theme::makeLabel(flap_root_, "", theme::fontTitle(), theme::textSecondary());
+    flap_date_ = theme::makeLabel(flap_root_, "", theme::fontDisplay(), theme::textSecondary());
 }
 
 void ClockPlugin::applyFaceVisibility() {

@@ -143,11 +143,17 @@ void PluginBase::tick() {
 
     const bool periodic = (tick_counter_ % kFooterRefreshEveryTicks == 0);
 
+    if (ui_.built()) {
+        // Every tick, not only on a dirty one: the radio's state changes independently of any
+        // plugin's data, so gating this on plugin dirtiness would leave the icon stale on a page
+        // that had nothing else to say. setNetwork() is a no-op when the value is unchanged.
+        ui_.setNetwork(networkIndicator());
+    }
+
     if (dirty_.exchange(false, std::memory_order_acq_rel)) {
         if (ui_.built()) {
             updateUi();
             ui_.setState(state());
-            ui_.setOffline(requiresNetwork() && !online());
             refreshFooter();
         }
     } else if (ui_.built() && periodic) {
