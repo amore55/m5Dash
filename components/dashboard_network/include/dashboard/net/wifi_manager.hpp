@@ -44,6 +44,22 @@ enum class WifiState : uint8_t {
 
 const char* toString(WifiState state);
 
+/// Why the last connection attempt failed, reduced to the only distinction that matters for
+/// recovery: whether trying again could ever help.
+///
+/// The supervisor needs this because a retry count on its own cannot tell a wrong password from
+/// an unplugged router, and the two want opposite handling — one should raise the setup portal
+/// promptly, the other should keep quietly retrying rather than drop the dashboard into setup
+/// mode because the router rebooted overnight.
+enum class WifiFailure : uint8_t {
+    None,         ///< Nothing has failed, or we are connected.
+    Credentials,  ///< The access point rejected our key. More attempts will not change its mind.
+    NotFound,     ///< The network was not there to join. It may well come back.
+    Other,        ///< Something else; treated as retryable.
+};
+
+const char* toString(WifiFailure failure);
+
 /// One access point from a scan. Deliberately a flat POD with an inline SSID buffer: the setup
 /// portal renders this list straight into JSON, and a fixed-size record means the scan cannot
 /// fail for want of heap at exactly the moment the user is trying to fix a network problem.
@@ -81,6 +97,13 @@ class WifiManager {
     /// Shut the setup access point down and return to station-only operation.
     esp_err_t stopAccessPoint();
 
+    /// True while the setup access point is up.
+    ///
+    /// Tracked separately from state(), because the two are genuinely independent: in AP+STA the
+    /// station can associate and get an address while the portal is still being served. Anything
+    /// deciding whether to tear the portal down must ask this, not state().
+    bool apActive() const { return ap_active_; }
+
     /// Dotted-quad address of the setup AP — the address the user types into a browser.
     void apIpAddress(char* out, size_t capacity) const;
 
@@ -108,6 +131,12 @@ class WifiManager {
     /// explicit disconnect().
     int retryCount() const { return retry_count_; }
 
+    /// How the last attempt failed. Cleared on a successful connection.
+    ///
+    /// Pair this with retryCount(): the count says how insistent the failure is, this says
+    /// whether insisting further is pointless.
+    WifiFailure lastFailure() const { return last_failure_; }
+
     /// Blocking scan for access points, strongest first, with duplicate SSIDs collapsed.
     ///
     /// Writes at most `capacity` records and sets `count`. Takes a couple of seconds — call it
@@ -133,6 +162,11 @@ class WifiManager {
 
     /// Consecutive failures, used to grow the retry delay. Reset on success.
     int retry_count_ = 0;
+
+    WifiFailure last_failure_ = WifiFailure::None;
+
+    /// Whether the AP interface is up. See apActive().
+    bool ap_active_ = false;
 };
 
 }  // namespace dashboard::net

@@ -244,6 +244,111 @@ void startHealthTimer() {
     }
 }
 
+// ---------------------------------------------------------------------------------------
+// Wi-Fi supervisor
+// ---------------------------------------------------------------------------------------
+//
+// WifiManager handles one connection attempt and the backoff behind it. What it deliberately
+// does not decide is when to give up on the stored credentials and ask the user for new ones —
+// that needs the settings, the secret store and the portal, none of which it knows about.
+//
+// Runs as its own task rather than on the health timer because everything it calls goes to the
+// ESP32-C6 over SDIO and blocks: a scan takes a couple of seconds, and an esp_timer callback
+// that blocks for that long stalls every other timer in the system.
+
+/// Try the stored credentials once. Safe with the portal up — see WifiManager::connect().
+void attemptStoredConnect(const char* why) {
+    if (!g_settings.provisioned()) {
+        return;
+    }
+    ESP_LOGI(kTag, "wifi supervisor: %s", why);
+    dashboard::storage::ScopedSecret password;
+    password.load(dashboard::storage::Secret::WifiPassword);
+    g_wifi.connect(g_settings.wifi_ssid.c_str(), password.c_str());
+}
+
+void raiseSetupPortal(const char* why) {
+    if (g_wifi.apActive()) {
+        return;
+    }
+    // Log text stays ASCII: the serial console mangles multi-byte characters.
+    ESP_LOGW(kTag, "wifi supervisor: raising the setup portal - %s", why);
+    if (g_wifi.startAccessPoint(dash::cfg::kSetupApSsid) != ESP_OK) {
+        ESP_LOGE(kTag, "wifi supervisor: the setup access point failed to start");
+        return;
+    }
+    // TODO: start the provisioning HTTP server here. Until dashboard_provisioning exists this
+    // raises an access point that serves nothing — the decision to raise it is what is being
+    // built, and the server slots in without changing any of the logic below.
+}
+
+void wifiSupervisorTask(void*) {
+    // Time spent unable to find the configured network, and time the portal has been up without
+    // a station retry. Both counted in supervisor ticks rather than wall clock: this task is the
+    // only thing that acts on them, so its own cadence is the honest unit.
+    uint32_t absent_ms = 0;
+    uint32_t portal_idle_ms = 0;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(dash::cfg::kWifiSupervisorPeriodMs));
+
+        const dashboard::net::WifiState state = g_wifi.state();
+
+        // Connected. Tear the portal down if it is still up — its whole purpose is served.
+        if (state == dashboard::net::WifiState::Connected) {
+            absent_ms = 0;
+            portal_idle_ms = 0;
+            if (g_wifi.apActive()) {
+                ESP_LOGI(kTag, "wifi supervisor: connected, closing the setup portal");
+                g_wifi.stopAccessPoint();
+            }
+            continue;
+        }
+
+        // Portal up, station not connected. Retry the stored credentials occasionally: the portal
+        // stays reachable throughout, so this costs the user nothing and recovers the device on
+        // its own if the network it was waiting for comes back.
+        if (g_wifi.apActive()) {
+            portal_idle_ms += dash::cfg::kWifiSupervisorPeriodMs;
+            if (portal_idle_ms >= dash::cfg::kWifiPortalRetryPeriodMs) {
+                portal_idle_ms = 0;
+                attemptStoredConnect("retrying stored credentials with the portal still up");
+            }
+            continue;
+        }
+
+        // Nothing configured and no portal: first run, or settings were wiped. Nothing to retry.
+        if (!g_settings.provisioned()) {
+            raiseSetupPortal("no Wi-Fi credentials are stored");
+            continue;
+        }
+
+        // The access point is rejecting our key. More attempts will not change its mind, so ask
+        // the user instead of retrying until the heat death of the universe.
+        if (g_wifi.lastFailure() == dashboard::net::WifiFailure::Credentials &&
+            g_wifi.retryCount() >= dash::cfg::kWifiAuthFailuresBeforePortal) {
+            raiseSetupPortal("the stored Wi-Fi password was rejected");
+            continue;
+        }
+
+        // Otherwise the network is merely unreachable. Keep waiting — WifiManager is already
+        // retrying with backoff — but not forever.
+        absent_ms += dash::cfg::kWifiSupervisorPeriodMs;
+        if (absent_ms >= dash::cfg::kWifiAbsentBeforePortalMs) {
+            absent_ms = 0;
+            raiseSetupPortal("the configured network has been unreachable for a long time");
+        }
+    }
+}
+
+void startWifiSupervisor() {
+    // 4 kB: the deepest thing on this stack is an esp_wifi call marshalled over the esp-hosted
+    // RPC layer, plus a ScopedSecret buffer.
+    if (xTaskCreate(&wifiSupervisorTask, "wifi_sup", 4096, nullptr, 4, nullptr) != pdPASS) {
+        ESP_LOGE(kTag, "wifi supervisor task failed to start; no automatic setup-portal recovery");
+    }
+}
+
 esp_err_t initialiseNvs() {
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -454,15 +559,17 @@ extern "C" void app_main(void) {
         });
 
         if (g_settings.provisioned()) {
-            dashboard::storage::ScopedSecret password;
-            password.load(dashboard::storage::Secret::WifiPassword);
-            g_wifi.connect(g_settings.wifi_ssid.c_str(), password.c_str());
+            attemptStoredConnect("connecting with stored credentials");
         } else {
             // No credentials yet. A scan is the cheapest end-to-end proof that the ESP32-C6
-            // link works, and it produces the network list the setup portal will need.
+            // link works, and it logs what is in range before the portal goes up.
             ESP_LOGW(kTag, "no Wi-Fi credentials stored; first-run setup is required");
             g_wifi.scanAndLog();
         }
+
+        // From here on the supervisor owns the decision to raise or close the setup portal —
+        // including the first-run case above, so that one code path handles it rather than two.
+        startWifiSupervisor();
     } else {
         ESP_LOGE(kTag, "Wi-Fi unavailable; running offline");
     }

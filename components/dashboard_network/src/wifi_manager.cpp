@@ -75,7 +75,40 @@ const char* describeDisconnectReason(uint8_t reason) {
     }
 }
 
+/// Reduce a disconnect reason code to whether retrying could ever help.
+///
+/// Deliberately conservative: anything not clearly an authentication rejection is treated as
+/// retryable, because wrongly classifying a transient fault as "bad credentials" would drop a
+/// working dashboard into setup mode, which is far more annoying than a slightly late portal.
+WifiFailure classifyFailure(uint8_t reason) {
+    switch (reason) {
+        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+        case WIFI_REASON_MIC_FAILURE:
+            return WifiFailure::Credentials;
+        case WIFI_REASON_NO_AP_FOUND:
+            return WifiFailure::NotFound;
+        default:
+            return WifiFailure::Other;
+    }
+}
+
 }  // namespace
+
+const char* toString(WifiFailure failure) {
+    switch (failure) {
+        case WifiFailure::None:
+            return "none";
+        case WifiFailure::Credentials:
+            return "credentials rejected";
+        case WifiFailure::NotFound:
+            return "network not found";
+        case WifiFailure::Other:
+            return "other";
+    }
+    return "?";
+}
 
 const char* toString(WifiState state) {
     switch (state) {
@@ -172,11 +205,19 @@ esp_err_t WifiManager::connect(const char* ssid, const char* password) {
     cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;  // accept whatever the AP offers
     cfg.sta.pmf_cfg.capable = true;
 
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), kTag, "set_mode failed");
+    // Do not drop the setup portal in order to try a connection. In AP+STA the station can
+    // associate while the portal stays reachable, which is what lets a device recover on its own
+    // when the router it was waiting for comes back.
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(ap_active_ ? WIFI_MODE_APSTA : WIFI_MODE_STA), kTag,
+                        "set_mode failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &cfg), kTag, "set_config failed");
 
-    retry_count_ = 0;
-    setState(WifiState::Connecting);
+    // With the portal up the supervisor decides when to try again, so a failure here must not
+    // start the automatic backoff loop underneath it: -1 keeps this to a single attempt.
+    retry_count_ = ap_active_ ? -1 : 0;
+    if (!ap_active_) {
+        setState(WifiState::Connecting);
+    }
     // The SSID is fine to log. The password is not, and is never passed to a log call.
     ESP_LOGI(kTag, "connecting to '%s'", ssid);
     return esp_wifi_connect();
@@ -209,6 +250,7 @@ esp_err_t WifiManager::startAccessPoint(const char* ssid) {
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), kTag, "AP+STA mode failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &cfg), kTag, "AP config failed");
 
+    ap_active_ = true;
     setState(WifiState::AccessPoint);
 
     char ip[16];
@@ -219,12 +261,18 @@ esp_err_t WifiManager::startAccessPoint(const char* ssid) {
 }
 
 esp_err_t WifiManager::stopAccessPoint() {
-    if (!started_ || state_ != WifiState::AccessPoint) {
+    if (!started_ || !ap_active_) {
         return ESP_OK;
     }
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), kTag, "STA mode failed");
-    retry_count_ = 0;
-    setState(WifiState::Idle);
+    ap_active_ = false;
+
+    // Only the AP is being torn down. If the station connected while the portal was up, that
+    // connection survives and its state must not be trampled back to Idle.
+    if (state_ != WifiState::Connected) {
+        retry_count_ = 0;
+        setState(WifiState::Idle);
+    }
     ESP_LOGI(kTag, "setup access point stopped");
     return ESP_OK;
 }
@@ -249,7 +297,8 @@ void WifiManager::disconnect() {
     }
     retry_count_ = -1;  // suppress automatic reconnection
     esp_wifi_disconnect();
-    setState(WifiState::Idle);
+    // Dropping the station does not drop the portal, so do not report Idle over the top of it.
+    setState(ap_active_ ? WifiState::AccessPoint : WifiState::Idle);
 }
 
 void WifiManager::ipAddress(char* out, size_t capacity) const {
@@ -409,12 +458,22 @@ void WifiManager::onWifiEvent(int32_t id, void* data) {
             break;
 
         case WIFI_EVENT_STA_DISCONNECTED: {
-            if (retry_count_ < 0) {
-                // Deliberate disconnect; do not fight the user.
-                break;
-            }
             const auto* event = static_cast<wifi_event_sta_disconnected_t*>(data);
             const uint8_t reason = (event != nullptr) ? event->reason : 0;
+            last_failure_ = classifyFailure(reason);
+
+            if (retry_count_ < 0) {
+                // Reconnection is suppressed: either a deliberate disconnect, or the single
+                // attempt the supervisor makes while the portal is up. Do not fight the caller.
+                if (ap_active_) {
+                    ESP_LOGW(kTag, "attempt failed with the portal up (reason %u: %s)", reason,
+                             describeDisconnectReason(reason));
+                    // The portal is still the thing the user can act on, so say so rather than
+                    // reporting a station state nobody can do anything about.
+                    setState(WifiState::AccessPoint);
+                }
+                break;
+            }
             setState(WifiState::Disconnected);
             ++retry_count_;
             const uint32_t delay = backoffDelayMs(retry_count_);
@@ -443,6 +502,7 @@ void WifiManager::onIpEvent(int32_t id, void* data) {
     }
     const auto* event = static_cast<ip_event_got_ip_t*>(data);
     retry_count_ = 0;
+    last_failure_ = WifiFailure::None;
     setState(WifiState::Connected);
     if (event != nullptr) {
         ESP_LOGI(kTag, "connected, IP " IPSTR ", RSSI %d dBm", IP2STR(&event->ip_info.ip), rssi());

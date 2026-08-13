@@ -82,6 +82,31 @@ constexpr const char* kSetupApSsid = "DeskDashboard-Setup";
 constexpr int kSetupApChannel = 6;
 constexpr int kSetupApMaxConnections = 2;
 
+/// How often the Wi-Fi supervisor re-examines the situation. Only decides things; the radio work
+/// it triggers is rare, so this can be slow and cheap.
+constexpr uint32_t kWifiSupervisorPeriodMs = 5u * 1000u;
+
+/// Authentication rejections before the setup portal is raised.
+///
+/// Low on purpose: the access point has told us the key is wrong, and it will keep saying so. A
+/// few attempts cover a genuine handshake glitch without leaving a mistyped password looking
+/// like a dead device.
+constexpr int kWifiAuthFailuresBeforePortal = 3;
+
+/// How long the configured network may be simply absent before the portal is raised anyway.
+///
+/// Generous, because this is the router-rebooted case and the dashboard is perfectly usable
+/// offline in the meantime — dropping into setup mode over a two-minute outage would be far
+/// worse than waiting. But it must not be never: a device that has moved house needs some way
+/// back in that is not a reflash.
+constexpr uint32_t kWifiAbsentBeforePortalMs = 20u * 60u * 1000u;
+
+/// While the portal is up, how often to quietly re-try the stored credentials.
+///
+/// AP+STA means this costs the user nothing: the portal stays reachable throughout, so a router
+/// that comes back recovers the device without anyone touching it.
+constexpr uint32_t kWifiPortalRetryPeriodMs = 5u * 60u * 1000u;
+
 // ---------------------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------------------
