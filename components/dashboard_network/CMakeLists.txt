@@ -2,6 +2,7 @@ idf_component_register(
     SRCS
         "src/wifi_manager.cpp"
         "src/web_server.cpp"
+        "src/https_client.cpp"
         "src/time_sync.cpp"
     INCLUDE_DIRS
         "include"
@@ -22,6 +23,8 @@ idf_component_register(
         esp_netif
         esp_event
         esp_http_server         # the setup portal and the settings page
+        esp_http_client         # the outbound API client
+        mbedtls                 # esp_crt_bundle: the root store every request validates against
         mdns                    # so the settings page has a name, not just an address
         lwip                    # SNTP
         nvs_flash
