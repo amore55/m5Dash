@@ -14,6 +14,7 @@ idf_component_register(
         # here plus deleting its directory — which is the property that makes "a failing
         # integration must not take the dashboard down" true at build time as well as run time.
         clock
+        mdns            # app_main advertises <hostname>.local once the link is up
         nvs_flash
 )
 

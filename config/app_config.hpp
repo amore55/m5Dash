@@ -82,6 +82,14 @@ constexpr const char* kSetupApSsid = "DeskDashboard-Setup";
 constexpr int kSetupApChannel = 6;
 constexpr int kSetupApMaxConnections = 2;
 
+/// mDNS hostname: once on your own network the device also answers to http://<this>.local, so
+/// the settings page has an address that does not change when the router hands out a new lease.
+///
+/// A constant rather than device_name from settings, because a hostname has to survive DNS
+/// labelling rules and a display name does not — "Andrew's Dashboard" is a fine label and an
+/// invalid hostname.
+constexpr const char* kMdnsHostname = "deskdashboard";
+
 /// How often the Wi-Fi supervisor re-examines the situation. Only decides things; the radio work
 /// it triggers is rare, so this can be slow and cheap.
 constexpr uint32_t kWifiSupervisorPeriodMs = 5u * 1000u;

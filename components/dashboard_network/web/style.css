@@ -1,0 +1,105 @@
+/* Shared styling for the device's configuration pages.
+ *
+ * Served from the device itself, which has no route to the internet while the setup access point
+ * is up — so there are no web fonts, no CDN, no external anything. Colours mirror the dashboard
+ * theme in components/dashboard_core/src/theme.cpp so the pages look like the device that served
+ * them. If the theme palette changes, this is the second place to update. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0B0D10;
+  --surface: #15181E;
+  --border: #262B35;
+  --text: #E6E9EF;
+  --muted: #8A93A6;
+  --accent: #4C8DFF;
+  --ok-bg: #10261A;
+  --ok-fg: #7BE0A6;
+  --ok-border: #1F5136;
+  --err-bg: #2A1416;
+  --err-fg: #FF9B9B;
+  --err-border: #5A2226;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 24px 16px 64px;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+main { max-width: 34rem; margin: 0 auto; }
+
+h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+h2 {
+  font-size: .8rem; margin: 2rem 0 .25rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+p.sub { margin: 0 0 1.5rem; color: var(--muted); font-size: .9rem; }
+p.note { color: var(--muted); font-size: .85rem; margin: .5rem 0 0; }
+
+fieldset { border: 0; margin: 0; padding: 0; }
+
+label {
+  display: block; margin: 1rem 0 .35rem;
+  font-size: .85rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+
+input, select {
+  width: 100%; padding: .7rem .8rem; font-size: 1rem;
+  background: var(--surface); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px;
+}
+input:focus, select:focus {
+  outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent);
+}
+
+.row { display: flex; gap: .75rem; }
+.row > div { flex: 1; }
+
+button {
+  width: 100%; margin-top: 1.5rem; padding: .8rem;
+  font-size: 1rem; font-weight: 600;
+  background: var(--accent); color: #08101F;
+  border: 0; border-radius: 8px; cursor: pointer;
+}
+button:disabled { opacity: .5; cursor: default; }
+button.secondary {
+  background: transparent; color: var(--text);
+  border: 1px solid var(--border); font-weight: 400;
+}
+
+/* Tappable lists — the scanned networks, and geocoding results. */
+ul.picker {
+  list-style: none; margin: .5rem 0 0; padding: 0;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+}
+ul.picker:empty { display: none; }
+ul.picker li { border-top: 1px solid var(--border); }
+ul.picker li:first-child { border-top: 0; }
+ul.picker button {
+  margin: 0; border-radius: 0; background: transparent; color: var(--text);
+  font-weight: 400; text-align: left; padding: .65rem .8rem;
+  display: flex; gap: .6rem; align-items: baseline; border: 0;
+}
+ul.picker button:hover { background: var(--surface); }
+ul.picker .grow { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ul.picker .meta { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+
+.msg { margin-top: 1.25rem; padding: .7rem .8rem; border-radius: 8px; display: none; }
+.msg.ok  { display: block; background: var(--ok-bg);  color: var(--ok-fg);  border: 1px solid var(--ok-border); }
+.msg.err { display: block; background: var(--err-bg); color: var(--err-fg); border: 1px solid var(--err-border); }
+
+nav { margin-bottom: 1.5rem; font-size: .9rem; }
+nav a { color: var(--accent); text-decoration: none; }
+nav a:hover { text-decoration: underline; }
+
+.pill {
+  display: inline-block; padding: .15rem .5rem; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--border);
+  color: var(--muted); font-size: .75rem;
+}

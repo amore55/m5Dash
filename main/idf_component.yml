@@ -47,6 +47,13 @@ dependencies:
   espressif/esp_hosted: "1.4.0"
   espressif/esp_wifi_remote: "0.8.5"
 
+  ## mDNS, so the settings page has a name rather than only an address.
+  ##
+  ## Without it the only way to reach the device on your own network is to find the IP its
+  ## router handed out, which changes. Moved out of esp-idf core into the registry in 5.x, so
+  ## it has to be declared even though it feels like a built-in.
+  espressif/mdns: "^1.2"
+
   ## Power-fail-safe filesystem for the task store and the API response cache.
   ## Chosen over SPIFFS specifically because the brief requires surviving power loss mid-write.
   joltwallet/littlefs: "^1.16.4"

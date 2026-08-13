@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Desk Dashboard &mdash; Wi-Fi</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <nav id="nav" hidden><a href="/settings">&larr; Settings</a></nav>
+
+  <h1>Wi-Fi</h1>
+  <p class="sub" id="sub">Choose your network to finish setup.</p>
+
+  <p class="note" id="scanning">Scanning&hellip;</p>
+  <ul class="picker" id="nets"></ul>
+
+  <form id="f" autocomplete="off">
+    <label for="ssid">Network name</label>
+    <input id="ssid" name="ssid" maxlength="32" required autocapitalize="none" spellcheck="false">
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" maxlength="63" autocomplete="off">
+    <p class="note">Leave the password empty for an open network.</p>
+    <button type="submit" id="go">Save and connect</button>
+  </form>
+
+  <div class="msg" id="msg"></div>
+</main>
+
+<script src="/app.js"></script>
+<script>
+(function () {
+  var ssid = document.getElementById('ssid');
+
+  function bars(rssi) {
+    if (rssi >= -55) return '••••';
+    if (rssi >= -67) return '•••';
+    if (rssi >= -78) return '••';
+    return '•';
+  }
+
+  // Already configured? Then this page is a way to CHANGE the network rather than a first-run
+  // step, so offer the way back to settings and soften the wording.
+  Dash.get('/api/state').then(function (s) {
+    if (s && s.provisioned) {
+      document.getElementById('nav').hidden = false;
+      document.getElementById('sub').textContent =
+        'Currently on "' + (s.ssid || '') + '". Choose a different network to move the dashboard.';
+    }
+  }).catch(function () {});
+
+  Dash.get('/api/scan').then(function (data) {
+    var note = document.getElementById('scanning');
+    var list = document.getElementById('nets');
+    var nets = (data && data.networks) || [];
+    if (!nets.length) {
+      note.textContent = 'No networks found. Enter the name by hand.';
+      return;
+    }
+    note.hidden = true;
+    nets.forEach(function (n) {
+      list.appendChild(Dash.pickerItem(n.ssid, (n.secured ? '🔒 ' : '') + bars(n.rssi),
+        function () {
+          ssid.value = n.ssid;
+          document.getElementById('password').focus();
+        }));
+    });
+  }).catch(function () {
+    document.getElementById('scanning').textContent =
+      'Could not scan. Enter the network name by hand.';
+  });
+
+  document.getElementById('f').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var go = document.getElementById('go');
+    go.disabled = true;
+    Dash.say('Saving…', 'ok');
+    Dash.postForm('/api/wifi', {
+      ssid: ssid.value,
+      password: document.getElementById('password').value
+    }).then(function () {
+      Dash.say('Saved. The dashboard is connecting — the setup network will disappear ' +
+               'once it succeeds.', 'ok');
+    }).catch(function (err) {
+      Dash.say(err.message || 'Could not save those details.', 'err');
+      go.disabled = false;
+    });
+  });
+})();
+</script>
+</body>
+</html>

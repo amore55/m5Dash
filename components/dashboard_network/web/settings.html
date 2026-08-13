@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Desk Dashboard &mdash; Settings</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <nav><a href="/">&larr; Wi-Fi</a></nav>
+  <h1>Settings</h1>
+  <p class="sub" id="sub">Loading&hellip;</p>
+
+  <!-- Unlock / first-run PIN. Which of the two it is depends on whether a PIN has been set. -->
+  <section id="gate" hidden>
+    <h2 id="gate-title">Unlock</h2>
+    <p class="note" id="gate-note"></p>
+    <form id="gate-form" autocomplete="off">
+      <label for="gate-pin">PIN</label>
+      <input id="gate-pin" type="password" inputmode="numeric" maxlength="8" required
+             autocomplete="off">
+      <div id="gate-confirm-wrap" hidden>
+        <label for="gate-confirm">Confirm PIN</label>
+        <input id="gate-confirm" type="password" inputmode="numeric" maxlength="8"
+               autocomplete="off">
+      </div>
+      <button type="submit" id="gate-go">Continue</button>
+    </form>
+    <div class="msg" id="gate-msg"></div>
+  </section>
+
+  <!-- Everything below is hidden until the gate is satisfied. -->
+  <section id="panel" hidden>
+    <form id="f" autocomplete="off">
+
+      <h2>Weather location</h2>
+      <label for="place">Search for a place</label>
+      <input id="place" placeholder="e.g. Sheffield" autocomplete="off" spellcheck="false">
+      <p class="note" id="geo-note">
+        The search runs in this browser, not on the dashboard, so it needs your device to be
+        online. If it cannot reach the lookup service, enter the coordinates directly.
+      </p>
+      <ul class="picker" id="places"></ul>
+
+      <label for="weather_label">Name shown on the dashboard</label>
+      <input id="weather_label" maxlength="63" required>
+
+      <div class="row">
+        <div>
+          <label for="latitude">Latitude</label>
+          <input id="latitude" type="number" step="any" min="-90" max="90" required>
+        </div>
+        <div>
+          <label for="longitude">Longitude</label>
+          <input id="longitude" type="number" step="any" min="-180" max="180" required>
+        </div>
+      </div>
+
+      <h2>Time</h2>
+      <label for="tz_preset">Timezone</label>
+      <select id="tz_preset">
+        <option value="GMT0BST,M3.5.0/1,M10.5.0/2">United Kingdom (GMT/BST)</option>
+        <option value="CET-1CEST,M3.5.0,M10.5.0/3">Central Europe (CET/CEST)</option>
+        <option value="EST5EDT,M3.2.0,M11.1.0">US Eastern</option>
+        <option value="CST6CDT,M3.2.0,M11.1.0">US Central</option>
+        <option value="MST7MDT,M3.2.0,M11.1.0">US Mountain</option>
+        <option value="PST8PDT,M3.2.0,M11.1.0">US Pacific</option>
+        <option value="UTC0">UTC</option>
+        <option value="__custom__">Custom&hellip;</option>
+      </select>
+      <div id="tz-custom-wrap" hidden>
+        <label for="timezone">POSIX TZ string</label>
+        <input id="timezone" maxlength="127" spellcheck="false">
+        <p class="note">
+          There is no timezone database on the device, so rules are given as a POSIX TZ string.
+        </p>
+      </div>
+
+      <h2>Clock</h2>
+      <label for="clock_style">Face</label>
+      <select id="clock_style">
+        <option value="minimal">Minimal</option>
+        <option value="flap">Split-flap</option>
+      </select>
+      <label for="show_seconds">Seconds</label>
+      <select id="show_seconds">
+        <option value="0">Hidden</option>
+        <option value="1">Shown</option>
+      </select>
+
+      <button type="submit" id="go">Save</button>
+    </form>
+    <div class="msg" id="msg"></div>
+
+    <h2>Security</h2>
+    <form id="pin-form" autocomplete="off">
+      <label for="new-pin">Change PIN</label>
+      <input id="new-pin" type="password" inputmode="numeric" maxlength="8" autocomplete="off"
+             placeholder="4 to 8 digits">
+      <p class="note">
+        Leave this empty and save to remove the PIN entirely, which leaves these settings open to
+        anyone on your network.
+      </p>
+      <button type="submit" class="secondary" id="pin-go">Update PIN</button>
+    </form>
+    <div class="msg" id="pin-msg"></div>
+  </section>
+</main>
+
+<script src="/app.js"></script>
+<script>
+(function () {
+  var GEOCODE = 'https://geocoding-api.open-meteo.com/v1/search';
+  var current = null;
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---- gate ----------------------------------------------------------------------------
+
+  function showGate(needsSetting) {
+    $('sub').textContent = 'This dashboard is protected by a PIN.';
+    $('gate').hidden = false;
+    $('panel').hidden = true;
+    $('gate-title').textContent = needsSetting ? 'Choose a PIN' : 'Unlock';
+    $('gate-confirm-wrap').hidden = !needsSetting;
+    $('gate-confirm').required = needsSetting;
+    $('gate-note').textContent = needsSetting
+      ? 'No PIN is set yet. Choose one of 4 to 8 digits — it also unlocks the dashboard screen.'
+      : 'Enter the dashboard PIN to change settings.';
+    $('gate-form').onsubmit = function (e) {
+      e.preventDefault();
+      if (needsSetting) { createPin(); } else { unlock(); }
+    };
+  }
+
+  function createPin() {
+    var a = $('gate-pin').value;
+    var b = $('gate-confirm').value;
+    if (a !== b) { Dash.say('Those PINs do not match.', 'err', 'gate-msg'); return; }
+    if (a.length < 4 || a.length > 8) {
+      Dash.say('The PIN must be 4 to 8 digits.', 'err', 'gate-msg');
+      return;
+    }
+    $('gate-go').disabled = true;
+    Dash.postForm('/api/pin', { pin: a }).then(function () {
+      Dash.setPin(a);
+      $('gate-go').disabled = false;
+      load();
+    }).catch(function (err) {
+      $('gate-go').disabled = false;
+      Dash.say(err.message, 'err', 'gate-msg');
+    });
+  }
+
+  function unlock() {
+    Dash.setPin($('gate-pin').value);
+    $('gate-go').disabled = true;
+    load().catch(function () { $('gate-go').disabled = false; });
+  }
+
+  // ---- load / render -------------------------------------------------------------------
+
+  function load() {
+    return Dash.get('/api/settings').then(function (s) {
+      current = s;
+      $('gate').hidden = true;
+      $('panel').hidden = false;
+      $('gate-go').disabled = false;
+      $('sub').textContent = 'Changes take effect as soon as you save.';
+      render(s);
+    }).catch(function (err) {
+      if (err.needsPin) { showGate(false); return; }
+      throw err;
+    });
+  }
+
+  function render(s) {
+    $('weather_label').value = s.weather_label || '';
+    $('latitude').value = s.latitude;
+    $('longitude').value = s.longitude;
+    $('clock_style').value = s.clock_style || 'minimal';
+    $('show_seconds').value = s.show_seconds ? '1' : '0';
+
+    // Select the matching preset if there is one; otherwise fall into the custom field so the
+    // stored value is visible and editable rather than silently replaced.
+    var preset = $('tz_preset');
+    var found = false;
+    for (var i = 0; i < preset.options.length; i++) {
+      if (preset.options[i].value === s.timezone) { preset.selectedIndex = i; found = true; break; }
+    }
+    if (!found) { preset.value = '__custom__'; }
+    $('timezone').value = s.timezone || '';
+    syncTzCustom();
+  }
+
+  function syncTzCustom() {
+    $('tz-custom-wrap').hidden = $('tz_preset').value !== '__custom__';
+  }
+  $('tz_preset').addEventListener('change', function () {
+    if ($('tz_preset').value !== '__custom__') { $('timezone').value = $('tz_preset').value; }
+    syncTzCustom();
+  });
+
+  // ---- geocoding, in the browser -------------------------------------------------------
+
+  var timer = null;
+  $('place').addEventListener('input', function () {
+    clearTimeout(timer);
+    var q = $('place').value.trim();
+    if (q.length < 2) { $('places').innerHTML = ''; return; }
+    // Debounced so typing a place name is one request rather than one per keystroke.
+    timer = setTimeout(function () { search(q); }, 350);
+  });
+
+  function search(q) {
+    fetch(GEOCODE + '?name=' + encodeURIComponent(q) + '&count=8&language=en&format=json')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var list = $('places');
+        list.innerHTML = '';
+        (data.results || []).forEach(function (r) {
+          var where = [r.admin1, r.country].filter(Boolean).join(', ');
+          list.appendChild(Dash.pickerItem(r.name, where, function () {
+            $('weather_label').value = r.name;
+            $('latitude').value = r.latitude;
+            $('longitude').value = r.longitude;
+            list.innerHTML = '';
+            $('place').value = '';
+          }));
+        });
+        if (!(data.results || []).length) {
+          $('geo-note').textContent = 'No places matched that name.';
+        }
+      })
+      .catch(function () {
+        $('geo-note').textContent =
+          'Could not reach the lookup service from this browser. Enter the coordinates directly.';
+      });
+  }
+
+  // ---- save ----------------------------------------------------------------------------
+
+  $('f').addEventListener('submit', function (e) {
+    e.preventDefault();
+    $('go').disabled = true;
+    Dash.say('Saving…', 'ok');
+    Dash.postForm('/api/settings', {
+      weather_label: $('weather_label').value,
+      latitude: $('latitude').value,
+      longitude: $('longitude').value,
+      timezone: $('tz_preset').value === '__custom__' ? $('timezone').value : $('tz_preset').value,
+      clock_style: $('clock_style').value,
+      show_seconds: $('show_seconds').value
+    }).then(function () {
+      Dash.say('Saved.', 'ok');
+      $('go').disabled = false;
+    }).catch(function (err) {
+      Dash.say(err.needsPin ? 'The PIN was not accepted.' : err.message, 'err');
+      $('go').disabled = false;
+      if (err.needsPin) { showGate(false); }
+    });
+  });
+
+  // ---- change or remove the PIN --------------------------------------------------------
+
+  $('pin-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    var next = $('new-pin').value;
+    if (next && (next.length < 4 || next.length > 8)) {
+      Dash.say('The PIN must be 4 to 8 digits.', 'err', 'pin-msg');
+      return;
+    }
+    if (!next && !confirm('Remove the PIN? Anyone on your network will be able to change these ' +
+                          'settings.')) {
+      return;
+    }
+    $('pin-go').disabled = true;
+    // Authorised by the PIN already held from unlocking, so this works for both changing and
+    // removing without asking for the current one again.
+    Dash.postForm('/api/pin', { pin: next }).then(function () {
+      if (next) { Dash.setPin(next); } else { Dash.clearPin(); }
+      $('new-pin').value = '';
+      $('pin-go').disabled = false;
+      Dash.say(next ? 'PIN updated.' : 'PIN removed.', 'ok', 'pin-msg');
+    }).catch(function (err) {
+      $('pin-go').disabled = false;
+      Dash.say(err.message, 'err', 'pin-msg');
+    });
+  });
+
+  // ---- start ---------------------------------------------------------------------------
+
+  Dash.get('/api/state').then(function (s) {
+    if (!s.has_pin) { showGate(true); return; }
+    load();
+  }).catch(function () {
+    // /api/state is deliberately unauthenticated, so a failure here means the device is
+    // unreachable rather than locked.
+    $('sub').textContent = 'Could not reach the dashboard.';
+  });
+})();
+</script>
+</body>
+</html>
