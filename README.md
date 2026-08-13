@@ -23,15 +23,19 @@ touch navigation.** Most integrations are not written yet.
 | Board bring-up (display, touch, LVGL, backlight) | ✅ **Verified on hardware** |
 | Plugin framework, page manager, gestures, theme | ✅ Done; **swipe navigation verified** |
 | **Clock page** | ✅ Real, renders on device |
-| RTC | ⚠️ Detected; never date-set, so falls back to network time |
+| RTC | ✅ Set from SNTP on every sync, so it survives a power cut |
+| **Wi-Fi (via the ESP32-C6)** | ✅ **Verified — connects, reconnects with backoff, scans** |
+| **First-run setup portal** | ✅ Own access point, network list, credentials saved |
+| **Network time (SNTP)** | ✅ Syncs and writes back to the RTC |
+| **HTTPS client** | ✅ Cert-bundle validation, response ceiling, retry/backoff — no callers yet |
+| **Settings web page** | ✅ `deskdashboard.local` — weather location, timezone, clock, PIN |
+| Storage (settings, tasks, cache) | ✅ Done and verified on hardware |
 | Weather · Elizabeth line · To-dos · Claude · Settings | 🔲 Placeholder pages only |
-| Wi-Fi, NTP, first-run setup portal | 🔲 Not started — the ESP32-C6 link is unproven |
-| Storage (settings, tasks, cache) | 🔲 Not started |
 | OTA updates | 🔲 Architecture and partitions ready, service not written |
 | CI workflows, host unit tests | 🔲 Not started |
-| Stability | ✅ Runs for minutes with flat heap; boot reset-reason + 30 s health reporting |
+| Stability | ✅ Runs with flat heap; boot reset-reason + 30 s health reporting |
 
-Current build: **~1.24 MB**, against a 6 MB OTA slot — 80 % free.
+Current build: **~1.65 MB**, against a 6 MB OTA slot — 74 % free.
 
 ### 🔴 If your Tab5's screen stays black, read this first
 
@@ -142,8 +146,10 @@ components/
                           RX8130CE RTC driver, ESP32-C6 power rail
   dashboard_core/         plugin interface, PluginBase, worker tasks, PageManager,
                           gesture detection, theme, page scaffold, time/JSON utilities
-  dashboard_network/      (planned) Wi-Fi, SNTP, HTTPS client, setup portal
-  dashboard_storage/      (planned) settings + migrations, LittleFS, task store, cache
+  dashboard_network/      ✅ Wi-Fi manager, SNTP + RTC write-back, HTTPS client,
+                          configuration web server (setup portal + settings page,
+                          pages under web/ embedded at build time)
+  dashboard_storage/      ✅ settings + migrations, LittleFS, task store, cache
   dashboard_ota/          (planned) manifest parsing, OTA with SHA-256 and rollback
 plugins/                  one ESP-IDF component per page
   clock/                  ✅ implemented
@@ -207,10 +213,20 @@ All thresholds live in [`config/app_config.hpp`](config/app_config.hpp).
 documents every configurable value using placeholders only, and `.gitignore` blocks local
 configuration, build output and generated files.
 
-Once the storage and network components exist, configuration will live in NVS and be set through
-a first-run setup portal (the device raises an access point called `DeskDashboard-Setup`) or the
-on-device Settings page. Secrets go in a separate NVS namespace, are masked in the UI, and are
-never logged.
+Configuration lives in NVS and is set from a browser. On first run the device raises an access
+point called `DeskDashboard-Setup`; join it and browse to `http://192.168.4.1` to pick a network.
+After that the same server is reachable on your own network at **`http://deskdashboard.local`**,
+where `/settings` covers the weather location, timezone and clock face.
+
+Secrets live in a separate NVS namespace, are never returned to the browser (the page shows
+`set (46 chars)`, never the value) and are never logged. The settings site is gated by the same
+PIN as the lock screen; until one is chosen it is open, because the device cannot demand a
+credential nobody has given it yet.
+
+Two deliberate limitations, both recorded in
+[IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md): the configuration site is **plain HTTP**,
+because a self-signed certificate would train you to click through TLS warnings; and there is no
+captive-portal DNS redirect, so the address has to be typed.
 
 TLS certificate validation is on and stays on — `esp_crt_bundle` with the full root set.
 Verification is never disabled to make something work.
@@ -260,14 +276,16 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 ## Roadmap
 
 1. ~~Build system, board support, plugin framework, clock~~ ✅
-2. Storage: settings with schema migrations, LittleFS, task store, response cache
-3. Network: Wi-Fi manager, SNTP with RTC fallback, HTTPS client, first-run setup portal
-4. Public integrations: Elizabeth line (TfL), weather (Open-Meteo)
-5. To-dos via Telegram long polling
-6. OTA: manifest, SHA-256 verification, channels, automatic rollback
-7. Claude usage (experimental, isolated so it cannot delay the rest)
-8. Idle wallpaper / PIN lock screen
-9. CI build and tagged-release workflows, host unit tests
+2. ~~Storage: settings with schema migrations, LittleFS, task store, response cache~~ ✅
+3. ~~Network: Wi-Fi manager, SNTP with RTC write-back, HTTPS client, setup portal and
+   settings page~~ ✅
+4. Public integrations: weather (Open-Meteo) ← **next**, then Elizabeth line (TfL)
+5. Overview page: one screen of KPIs drawn from every plugin
+6. To-dos via Telegram long polling
+7. OTA: manifest, SHA-256 verification, channels, automatic rollback
+8. Claude usage (experimental, isolated so it cannot delay the rest)
+9. Idle wallpaper / PIN lock screen
+10. CI build and tagged-release workflows, host unit tests
 
 ---
 

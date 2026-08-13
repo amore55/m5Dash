@@ -8,9 +8,73 @@ See [IMPLEMENTATION_PLAN.md §1.1](IMPLEMENTATION_PLAN.md#11-spaces-in-the-proje
 **Remote:** `https://github.com/amore55/m5Dash` — **public**. Branch `main`.
 **Toolchain:** ESP-IDF **v5.4.4** — activate with `. .\scripts\idf_env.ps1` (§1.1).
 
+---
+
+## ⏭️ RESUME HERE — state at the end of the 13 August 2026 session
+
+**The device is on the network, telling the time, and configurable from a browser.** Stage 3
+(local core) and the whole of `dashboard_network` are done. Nothing is half-finished: the working
+tree is clean and every commit below was verified on hardware before it was made.
+
+### What works right now, on the device
+
+| | |
+| --- | --- |
+| Wi-Fi | Connects to `More2.4` on boot from stored credentials |
+| First-run setup | Raises `DeskDashboard-Setup`, serves a form at `192.168.4.1`, takes credentials, connects |
+| Time | SNTP syncs and writes back to the RX8130CE; clock shows real local time |
+| Settings site | `http://deskdashboard.local` (or `http://192.168.2.182`) — weather location, timezone, clock face, PIN |
+| Header | Always-visible signal icon, far right |
+
+### Pick up here
+
+**Next: the weather plugin.** `HttpsClient` exists and is proven against
+`api.open-meteo.com` but **has no callers yet** — weather is its first real one. The location it
+should read is already in `Settings` (`weather_label`, `latitude`, `longitude`) and is already
+editable from the settings page. Build it behind a `WeatherProvider` interface per §4.5, with a
+host-testable parser.
+
+Then, in order: **Elizabeth line** → **overview/KPI page** → to-dos → Claude → OTA.
+
+### Decisions taken this session (do not reopen without a reason)
+
+* **Settings are configured in a browser, not by touch.** The device has no keyboard; typing a
+  place name or a POSIX TZ rule on an on-screen keyboard is miserable. The on-device settings page
+  remains the right home for toggles and brightness.
+* **The web server never stops.** It answers on the setup AP and the home network alike.
+* **PIN-gated**, reusing the lock-screen salted hash, verified per request. No PIN is set on the
+  device today — the owner chooses one on first visit to `/settings`.
+* **Geocoding runs in the browser, not on the device.** The page searches Open-Meteo from the
+  phone or laptop viewing it and POSTs only the coordinates, which sidesteps needing an on-device
+  geocoder entirely. Manual lat/long entry is the fallback.
+
+### Known gaps, in rough priority order
+
+1. **`Authorization` is not stripped across a redirect.** `esp_http_client` follows redirects and
+   nothing removes the header if the redirect crosses hosts. Close this before the first
+   credentialled API (Telegram, Claude) ships. Not urgent for Open-Meteo, which needs no auth.
+2. **The web pages have never been opened in a browser.** The HTTP layer is well tested — every
+   route, the settings round trip, the whole PIN lifecycle — but the rendering and the JavaScript
+   are not. First click will tell.
+3. **No captive-portal DNS hijack**, so the setup page has to be typed rather than popping up.
+4. **`components/dashboard_core/src/theme.cpp` and `web/style.css` duplicate the palette.** Change
+   one, change the other.
+5. The `weather`, `elizabeth`, `todos`, `claude` and `settings` pages are still
+   `PlaceholderPlugin` — they render a description and fetch nothing.
+
+### A wanted feature, captured before it is forgotten
+
+**An overview / KPI page**: one page showing the time, Elizabeth line status without detail, the
+Claude percentage, and so on. It needs one small addition to the plugin interface — a `summary()`
+virtual so each plugin can report its own headline value and state, which every plugin already
+knows and nothing can currently ask for. Deliberately deferred until there are real plugins to
+summarise, or four of five tiles would be blank.
+
+---
+
 ## ✅ IT RUNS ON HARDWARE
 
-The build is green (exit 0, no warnings in our code, ~1.24 MB against a 6 MB OTA slot) **and the
+The build is green (exit 0, no warnings in our code, ~1.65 MB against a 6 MB OTA slot) **and the
 dashboard is running on the device.**
 
 | Verified on hardware | |
@@ -356,12 +420,28 @@ created_at/due_at/completed_at/source), `task_store.{hpp,cpp}` (bounded to
 
 </details>
 
-### 4.3 `components/dashboard_network` ← **RESUME HERE**
+### 4.3 `components/dashboard_network` — ✅ **DONE and verified on hardware**
 
-`wifi_manager` (STA + SoftAP, event-driven, exponential backoff, observable online/offline),
-`time_sync` (SNTP → RX8130CE write on every success), `https_client` (esp_crt_bundle,
-`cfg::kHttpMaxResponseBytes` ceiling, `kHttpTimeoutMs`, retry/backoff, **never logs headers
-or tokens**), `provisioning` (`esp_http_server` on the setup AP + embedded HTML form).
+| File | What it does |
+| --- | --- |
+| `wifi_manager.*` | STA + SoftAP, event-driven, exponential backoff, observable online/offline. `scan()` returns a flat `ScanResult` array, strongest first, duplicate SSIDs collapsed. AP and station state are **independent** (`ap_active_`), so the station can associate while the portal is still served. `WifiFailure` classifies disconnect reasons into "retrying could help" vs not. |
+| `time_sync.*` | SNTP, started only once the link is up. Each success is polled off the lwip task by the supervisor and written back to the RX8130CE, which is what stops the RTC drifting. |
+| `https_client.*` | The single outbound path. Cert-bundle validation with no opt-out, caller-supplied response ceiling, timeout, bounded retries. Logs scheme+host+path only — **never the query string**, because TfL puts its app key there. |
+| `web_server.*` + `web/` | Configuration site on port 80, always running, answering on both the setup AP and the home network. `/` Wi-Fi, `/settings` weather location + timezone + clock. PIN-gated via `X-Dash-Pin` against the lock-screen hash. Pages are real files under `web/`, embedded with `EMBED_TXTFILES`. |
+
+**Verified on device:** first-run portal takes credentials and connects; SNTP syncs and the RTC
+write-back lands; the settings API round-trips coordinates and preserves fields absent from the
+form; the full PIN lifecycle behaves (open with none, 401 without/wrong, 200 with, removal itself
+requiring it); HTTPS reaches api.open-meteo.com over a real TLS handshake, refuses `http://`, and
+reports truncation rather than handing back half a JSON document.
+
+Wired into `app_main`: a Wi-Fi supervisor task owns the decision to raise or close the setup
+portal (3 auth rejections → portal; 20 min unreachable → portal; retry every 5 min while it is
+up), mDNS advertises `deskdashboard.local`, and the header carries an always-visible signal icon.
+
+**Not done here:** no captive-portal DNS hijack, so the setup page must be typed rather than
+popping up. `esp_http_client` follows redirects but nothing yet strips `Authorization` on a
+cross-host redirect — worth closing before any credentialled API ships.
 
 ### 4.4 `components/dashboard_ota`
 
