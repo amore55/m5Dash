@@ -44,6 +44,16 @@ enum class WifiState : uint8_t {
 
 const char* toString(WifiState state);
 
+/// One access point from a scan. Deliberately a flat POD with an inline SSID buffer: the setup
+/// portal renders this list straight into JSON, and a fixed-size record means the scan cannot
+/// fail for want of heap at exactly the moment the user is trying to fix a network problem.
+struct ScanResult {
+    char ssid[33];  ///< 32 bytes max per 802.11, plus the terminator.
+    int8_t rssi;
+    uint8_t channel;
+    bool secured;
+};
+
 class WifiManager {
   public:
     /// Called on every state change. Runs on the system event task — see the threading note.
@@ -61,8 +71,18 @@ class WifiManager {
 
     /// Start the first-run configuration access point (open, no password — it exists precisely
     /// because no credentials are known yet, and a password would have to be printed somewhere
-    /// anyway). Stops any station activity first.
+    /// anyway).
+    ///
+    /// Brings the radio up in AP+STA rather than AP alone, because the setup page has to scan
+    /// for networks and a pure-AP interface cannot. The station side stays idle until the user
+    /// submits credentials.
     esp_err_t startAccessPoint(const char* ssid);
+
+    /// Shut the setup access point down and return to station-only operation.
+    esp_err_t stopAccessPoint();
+
+    /// Dotted-quad address of the setup AP — the address the user types into a browser.
+    void apIpAddress(char* out, size_t capacity) const;
 
     /// Drop the connection and stop retrying.
     void disconnect();
@@ -81,11 +101,23 @@ class WifiManager {
     /// Signal strength in dBm, or 0 when not connected.
     int rssi() const;
 
-    /// Scan for access points and log what is found.
+    /// Consecutive failed connection attempts. Zero once connected.
+    ///
+    /// The supervisor in app_main uses this to decide that stored credentials are not working
+    /// and the setup portal should be raised. Negative means reconnection was suppressed by an
+    /// explicit disconnect().
+    int retryCount() const { return retry_count_; }
+
+    /// Blocking scan for access points, strongest first, with duplicate SSIDs collapsed.
+    ///
+    /// Writes at most `capacity` records and sets `count`. Takes a couple of seconds — call it
+    /// from a worker or an HTTP handler task, never from the LVGL thread.
+    esp_err_t scan(ScanResult* out, size_t capacity, size_t& count);
+
+    /// Scan and log what is found.
     ///
     /// Primarily a bring-up diagnostic: it exercises the entire host-to-C6 path without needing
-    /// credentials, which makes it the cheapest possible proof that the SDIO link works. Also
-    /// the source of the network list in the setup portal.
+    /// credentials, which makes it the cheapest possible proof that the SDIO link works.
     esp_err_t scanAndLog(size_t max_results = 20);
 
   private:

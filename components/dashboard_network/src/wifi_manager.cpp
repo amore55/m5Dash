@@ -1,5 +1,6 @@
 #include "dashboard/net/wifi_manager.hpp"
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
@@ -24,6 +25,23 @@ constexpr const char* kTag = "wifi";
 
 esp_netif_t* g_sta_netif = nullptr;
 esp_netif_t* g_ap_netif = nullptr;
+
+/// Hard ceiling on beacons copied out of the driver in one scan.
+///
+/// The driver has already allocated its own list by the time we read it, so the copy briefly
+/// doubles that memory. In a block of flats a scan can legitimately see far more APs than any
+/// user would ever scroll through, and the setup portal is exactly where a heap spike is least
+/// affordable. Sorting and de-duplication happen across everything we do take, so the networks
+/// dropped here are the weakest ones — never a network that would have made the visible list.
+constexpr uint16_t kScanRecordLimit = 48;
+
+/// Most networks scanAndLog() will report, and so the size of its stack buffer.
+///
+/// Matches the documented default in the header. Kept well below kScanRecordLimit because this
+/// buffer lives on the caller's stack — app_main's, on the first-run path — whereas the driver
+/// read above is heap. A diagnostic listing more than twenty networks tells nobody anything the
+/// first twenty did not.
+constexpr size_t kLogRecordLimit = 20;
 
 /// Retry delay grows with consecutive failures and then holds.
 ///
@@ -184,12 +202,45 @@ esp_err_t WifiManager::startAccessPoint(const char* ssid) {
     // have to be printed on the screen anyway, and it is short-lived with one client.
     cfg.ap.authmode = WIFI_AUTH_OPEN;
 
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), kTag, "AP mode failed");
+    // AP+STA, not AP alone: the setup page lists nearby networks, and only a station interface
+    // can scan. Suppress reconnection while the portal is up so a stored-but-wrong password does
+    // not keep yanking the radio onto another channel underneath the user's phone.
+    retry_count_ = -1;
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), kTag, "AP+STA mode failed");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &cfg), kTag, "AP config failed");
 
     setState(WifiState::AccessPoint);
-    ESP_LOGI(kTag, "setup access point '%s' is up on channel %d", ssid, cfg.ap.channel);
+
+    char ip[16];
+    apIpAddress(ip, sizeof(ip));
+    ESP_LOGI(kTag, "setup access point '%s' is up on channel %d at http://%s", ssid,
+             cfg.ap.channel, ip);
     return ESP_OK;
+}
+
+esp_err_t WifiManager::stopAccessPoint() {
+    if (!started_ || state_ != WifiState::AccessPoint) {
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), kTag, "STA mode failed");
+    retry_count_ = 0;
+    setState(WifiState::Idle);
+    ESP_LOGI(kTag, "setup access point stopped");
+    return ESP_OK;
+}
+
+void WifiManager::apIpAddress(char* out, size_t capacity) const {
+    if (out == nullptr || capacity == 0) {
+        return;
+    }
+    esp_netif_ip_info_t info = {};
+    if (g_ap_netif == nullptr || esp_netif_get_ip_info(g_ap_netif, &info) != ESP_OK) {
+        // The AP netif has a fixed address assigned by esp_netif before the interface is even
+        // up, so this fallback is what the user will actually see on the setup screen.
+        std::snprintf(out, capacity, "192.168.4.1");
+        return;
+    }
+    std::snprintf(out, capacity, IPSTR, IP2STR(&info.ip));
 }
 
 void WifiManager::disconnect() {
@@ -224,41 +275,115 @@ int WifiManager::rssi() const {
     return record.rssi;
 }
 
-esp_err_t WifiManager::scanAndLog(size_t max_results) {
+esp_err_t WifiManager::scan(ScanResult* out, size_t capacity, size_t& count) {
+    count = 0;
+    if (out == nullptr || capacity == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
     if (!started_) {
         return ESP_ERR_INVALID_STATE;
     }
 
+    // Blocking. Works in AP+STA too, which is the whole reason startAccessPoint() uses that mode.
+    ESP_RETURN_ON_ERROR(esp_wifi_scan_start(nullptr, true), kTag, "scan start failed");
+
+    uint16_t found = 0;
+    const esp_err_t count_err = esp_wifi_scan_get_ap_num(&found);
+    if (count_err != ESP_OK) {
+        // Same reasoning as the allocation failure below: every path out of here after a
+        // successful scan_start has to either read the driver's list or clear it.
+        esp_wifi_clear_ap_list();
+        ESP_LOGE(kTag, "reading scan count failed: %s", esp_err_to_name(count_err));
+        return count_err;
+    }
+    if (found == 0) {
+        return ESP_OK;
+    }
+
+    // Take more beacons than the caller asked for, because the trim to `capacity` has to happen
+    // *after* de-duplication. Pulling only `capacity` records first would let one SSID broadcast
+    // by three mesh nodes eat three slots and push real networks off the end of the list.
+    uint16_t wanted = found < kScanRecordLimit ? found : kScanRecordLimit;
+    auto* records = static_cast<wifi_ap_record_t*>(calloc(wanted, sizeof(wifi_ap_record_t)));
+    if (records == nullptr) {
+        // The driver holds its scan list until it is either read or explicitly cleared, so
+        // bailing out without this leaks it until the next successful scan.
+        esp_wifi_clear_ap_list();
+        return ESP_ERR_NO_MEM;
+    }
+
+    const esp_err_t err = esp_wifi_scan_get_ap_records(&wanted, records);
+    if (err != ESP_OK) {
+        free(records);
+        ESP_LOGE(kTag, "reading scan records failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // Strongest first. The driver is documented to sort by RSSI, but that ordering arrives here
+    // through esp-hosted RPC from another chip, and the de-duplication below depends on it being
+    // true — the first record for an SSID is the one kept. Sorting explicitly costs microseconds
+    // and makes the guarantee this function's own, rather than the transport's.
+    std::sort(records, records + wanted,
+              [](const wifi_ap_record_t& a, const wifi_ap_record_t& b) { return a.rssi > b.rssi; });
+
+    for (uint16_t i = 0; i < wanted && count < capacity; ++i) {
+        const auto* ssid = reinterpret_cast<const char*>(records[i].ssid);
+        if (ssid[0] == '\0') {
+            // Hidden network. There is nothing to render and nothing the user could tap, and a
+            // row of blanks in the setup list reads as a bug.
+            continue;
+        }
+
+        bool seen = false;
+        for (size_t j = 0; j < count; ++j) {
+            if (std::strncmp(out[j].ssid, ssid, sizeof(out[j].ssid)) == 0) {
+                seen = true;
+                break;
+            }
+        }
+        if (seen) {
+            // Same network on another radio or band. The sort means the copy already kept is the
+            // stronger one, so this is the one to drop.
+            continue;
+        }
+
+        std::snprintf(out[count].ssid, sizeof(out[count].ssid), "%s", ssid);
+        out[count].rssi = records[i].rssi;
+        out[count].channel = records[i].primary;
+        out[count].secured = records[i].authmode != WIFI_AUTH_OPEN;
+        ++count;
+    }
+
+    free(records);
+    return ESP_OK;
+}
+
+esp_err_t WifiManager::scanAndLog(size_t max_results) {
+    ScanResult results[kLogRecordLimit] = {};
+    const size_t capacity = max_results < kLogRecordLimit ? max_results : kLogRecordLimit;
+    size_t count = 0;
+
     ESP_LOGI(kTag, "scanning for networks (this proves the ESP32-C6 link end to end)...");
-    const esp_err_t err = esp_wifi_scan_start(nullptr, true);  // blocking
+    const esp_err_t err = scan(results, capacity, count);
     if (err != ESP_OK) {
         ESP_LOGE(kTag, "scan failed: %s", esp_err_to_name(err));
         return err;
     }
-
-    uint16_t found = 0;
-    esp_wifi_scan_get_ap_num(&found);
-    if (found == 0) {
+    if (count == 0) {
         ESP_LOGW(kTag, "scan completed but found no networks");
         return ESP_OK;
     }
 
-    uint16_t wanted = static_cast<uint16_t>(found < max_results ? found : max_results);
-    auto* records = static_cast<wifi_ap_record_t*>(calloc(wanted, sizeof(wifi_ap_record_t)));
-    if (records == nullptr) {
-        esp_wifi_scan_get_ap_records(&wanted, nullptr);  // discard, free driver memory
-        return ESP_ERR_NO_MEM;
+    ESP_LOGI(kTag, "found %u network(s), strongest first:", static_cast<unsigned>(count));
+    for (size_t i = 0; i < count; ++i) {
+        ESP_LOGI(kTag, "  %-32s ch %2u  %4d dBm  %s", results[i].ssid,
+                 static_cast<unsigned>(results[i].channel), results[i].rssi,
+                 results[i].secured ? "secured" : "open");
     }
-
-    esp_wifi_scan_get_ap_records(&wanted, records);
-    ESP_LOGI(kTag, "found %u networks (showing %u):", found, wanted);
-    for (uint16_t i = 0; i < wanted; ++i) {
-        ESP_LOGI(kTag, "  %-32s ch %2d  %4d dBm  %s",
-                 reinterpret_cast<const char*>(records[i].ssid), records[i].primary,
-                 records[i].rssi,
-                 records[i].authmode == WIFI_AUTH_OPEN ? "open" : "secured");
+    if (count == capacity) {
+        // Say so rather than letting a truncated list look like the whole neighbourhood.
+        ESP_LOGI(kTag, "  (list truncated at %u)", static_cast<unsigned>(capacity));
     }
-    free(records);
     return ESP_OK;
 }
 
