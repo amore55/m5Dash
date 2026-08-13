@@ -1,6 +1,7 @@
 idf_component_register(
     SRCS
         "src/wifi_manager.cpp"
+        "src/provisioning.cpp"
     INCLUDE_DIRS
         "include"
         "${CMAKE_SOURCE_DIR}/config"
@@ -11,6 +12,7 @@ idf_component_register(
         esp_wifi
         esp_netif
         esp_event
+        esp_http_server        # the first-run setup portal
         nvs_flash
 )
 

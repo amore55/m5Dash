@@ -16,6 +16,7 @@
 // remaining integrations move into AppController as those components land — see
 // docs/BACKLOG.md §4.6.
 
+#include <atomic>
 #include <cinttypes>
 #include <cstdio>
 
@@ -30,6 +31,7 @@
 #include "app_config.hpp"
 #include "version.hpp"
 
+#include "dashboard/net/provisioning.hpp"
 #include "dashboard/net/wifi_manager.hpp"
 #include "dashboard/page_manager.hpp"
 #include "dashboard/storage/cache_store.hpp"
@@ -85,6 +87,14 @@ dashboard::storage::SettingsStore g_settings_store;
 dashboard::storage::Settings g_settings;
 dashboard::storage::TaskStore g_tasks;
 dashboard::net::WifiManager g_wifi;
+dashboard::net::ProvisioningServer g_portal;
+
+/// Set by the portal when new credentials land, cleared by the supervisor when it acts on them.
+///
+/// A flag rather than a direct call, because the two live on different tasks: the HTTP handler
+/// must return a response promptly, and having it drive the radio would also let the supervisor
+/// tear the portal down from underneath the very request that configured it.
+std::atomic<bool> g_credentials_changed{false};
 
 /// Split a comma-separated list into pointers into `scratch`, which is modified in place.
 /// Returns how many entries were produced.
@@ -267,6 +277,34 @@ void attemptStoredConnect(const char* why) {
     g_wifi.connect(g_settings.wifi_ssid.c_str(), password.c_str());
 }
 
+/// Persist credentials submitted through the portal. Runs on the HTTP server task.
+///
+/// The passphrase is written first: if that fails there is no point recording an SSID we have no
+/// key for, which would leave the device retrying a network it cannot authenticate to.
+esp_err_t storeSubmittedCredentials(const char* ssid, const char* password) {
+    esp_err_t err =
+        dashboard::storage::SecretStore::set(dashboard::storage::Secret::WifiPassword, password);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "saving the Wi-Fi passphrase failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    g_settings.wifi_ssid.assign(ssid);
+    err = g_settings_store.save(g_settings);
+    if (err != ESP_OK) {
+        ESP_LOGE(kTag, "saving settings failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    // The SSID is safe to log. The passphrase is not, and never reaches a log call.
+    ESP_LOGI(kTag, "stored Wi-Fi credentials for '%s'", ssid);
+
+    // Hand the connection attempt to the supervisor rather than making it here — see
+    // g_credentials_changed for why this task must not drive the radio.
+    g_credentials_changed.store(true);
+    return ESP_OK;
+}
+
 void raiseSetupPortal(const char* why) {
     if (g_wifi.apActive()) {
         return;
@@ -277,9 +315,28 @@ void raiseSetupPortal(const char* why) {
         ESP_LOGE(kTag, "wifi supervisor: the setup access point failed to start");
         return;
     }
-    // TODO: start the provisioning HTTP server here. Until dashboard_provisioning exists this
-    // raises an access point that serves nothing — the decision to raise it is what is being
-    // built, and the server slots in without changing any of the logic below.
+    if (g_portal.start(g_wifi, &storeSubmittedCredentials) != ESP_OK) {
+        // The access point is up but answers nothing. Withdraw it rather than advertising a
+        // network that leads nowhere, which is worse than not offering help at all.
+        ESP_LOGE(kTag, "wifi supervisor: portal server failed; withdrawing the access point");
+        g_wifi.stopAccessPoint();
+        return;
+    }
+
+    char ip[16];
+    g_wifi.apIpAddress(ip, sizeof(ip));
+    ESP_LOGW(kTag, "join '%s' and browse to http://%s to finish setup", dash::cfg::kSetupApSsid,
+             ip);
+}
+
+void closeSetupPortal(const char* why) {
+    if (!g_wifi.apActive()) {
+        return;
+    }
+    ESP_LOGI(kTag, "wifi supervisor: closing the setup portal - %s", why);
+    // Server first: it holds a socket on the interface that is about to disappear.
+    g_portal.stop();
+    g_wifi.stopAccessPoint();
 }
 
 void wifiSupervisorTask(void*) {
@@ -298,10 +355,8 @@ void wifiSupervisorTask(void*) {
         if (state == dashboard::net::WifiState::Connected) {
             absent_ms = 0;
             portal_idle_ms = 0;
-            if (g_wifi.apActive()) {
-                ESP_LOGI(kTag, "wifi supervisor: connected, closing the setup portal");
-                g_wifi.stopAccessPoint();
-            }
+            g_credentials_changed.store(false);
+            closeSetupPortal("connected");
             continue;
         }
 
@@ -309,6 +364,13 @@ void wifiSupervisorTask(void*) {
         // stays reachable throughout, so this costs the user nothing and recovers the device on
         // its own if the network it was waiting for comes back.
         if (g_wifi.apActive()) {
+            // Someone just submitted the form. Try it at once rather than making them wait out
+            // the slow retry cadence below, which would look like the portal had ignored them.
+            if (g_credentials_changed.exchange(false)) {
+                portal_idle_ms = 0;
+                attemptStoredConnect("credentials were just submitted through the portal");
+                continue;
+            }
             portal_idle_ms += dash::cfg::kWifiSupervisorPeriodMs;
             if (portal_idle_ms >= dash::cfg::kWifiPortalRetryPeriodMs) {
                 portal_idle_ms = 0;
