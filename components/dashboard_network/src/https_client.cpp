@@ -68,6 +68,15 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
     cfg.disable_auto_redirect = false;
     cfg.max_redirection_count = 3;
 
+    // Room for the request line and headers. esp_http_client defaults to 512 bytes, which is not
+    // enough for the kind of URL these APIs use: Open-Meteo's forecast query names every variable
+    // it should return and comes to about 500 characters on its own, so the request line alone
+    // filled the buffer and the client logged
+    //     E HTTP_HEADER: Buffer length is small to fit all the headers
+    // on every single fetch. TfL and Anthropic take query parameters too, so this is raised here,
+    // once, rather than left for each plugin to trip over.
+    cfg.buffer_size_tx = 1024;
+
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (client == nullptr) {
         return ESP_ERR_NO_MEM;

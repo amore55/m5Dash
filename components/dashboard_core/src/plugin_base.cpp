@@ -193,6 +193,22 @@ void PluginBase::disable(const char* reason) {
     markDirty();
 }
 
+void PluginBase::noteCachedData(std::time_t fetched_utc) {
+    if (fetched_utc <= 0) {
+        return;
+    }
+    const long long stamp = static_cast<long long>(fetched_utc);
+    if (last_success_.load(std::memory_order_relaxed) >= stamp) {
+        return;
+    }
+    last_success_.store(stamp, std::memory_order_relaxed);
+    setState(DataState::Stale);
+    // Not "refresh failed", which is what an empty detail would render as: at this point nothing
+    // has been attempted. This says where the numbers came from, which is the honest answer.
+    setError("cached from the last run");
+    markDirty();
+}
+
 void PluginBase::applyStaleIfAged() {
     if (state() != DataState::Ok) {
         return;

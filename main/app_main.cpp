@@ -22,6 +22,7 @@
 
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -48,6 +49,7 @@
 
 #include "placeholder_plugin.hpp"
 #include "plugins/clock_plugin.hpp"
+#include "plugins/weather_plugin.hpp"
 
 namespace {
 
@@ -62,10 +64,7 @@ constexpr uint64_t kHealthReportPeriodUs = 30ULL * 1000ULL * 1000ULL;
 // linker map rather than being a runtime surprise.
 plugins::ClockPlugin g_clock;
 
-dash::PlaceholderPlugin g_weather{"weather", "Weather",
-                                  "Open-Meteo forecast for a configured latitude and longitude. "
-                                  "Current conditions, daily high and low, rain probability and "
-                                  "the next few hours."};
+plugins::WeatherPlugin g_weather;
 
 dash::PlaceholderPlugin g_elizabeth{"elizabeth", "Elizabeth line",
                                     "Live service status from the TfL Unified API, refreshed "
@@ -158,6 +157,11 @@ void applySettings(tab5::Board& board) {
 
     g_clock.setFace(plugins::clockFaceFromString(g_settings.clock_style.c_str()));
     g_clock.setShowSeconds(g_settings.show_seconds);
+
+    // The weather page holds the location itself rather than reading g_settings, so that the only
+    // thread-shared copy of it is behind the plugin's own mutex. A changed coordinate refetches.
+    g_weather.setLocation(g_settings.latitude, g_settings.longitude,
+                          g_settings.weather_label.c_str());
 }
 
 /// Evaluate the dim schedule and apply it. Cheap, and only touches the panel when the level
@@ -237,10 +241,21 @@ void logResetReason() {
 /// Two jobs: it makes an unexplained reboot obvious (the uptime counter goes back to zero), and
 /// it makes a slow leak visible long before it becomes a crash. Deliberately infrequent so it
 /// does not bury anything else in the log.
+///
+/// INTERNAL and DMA are reported separately, and that is the important part. The total is 33 MB of
+/// PSRAM and tells you almost nothing: the resources that actually run out on this board are the
+/// ~500 KB of internal SRAM and the DMA-capable subset of it, which is what the TLS accelerators
+/// and the esp_hosted SDIO driver compete for. A log line saying "free heap: 31,754,044 bytes"
+/// was printed moments before this firmware died of memory exhaustion.
 void healthTimerCb(void*) {
-    ESP_LOGI(kTag, "health: uptime %llu s, free heap %" PRIu32 " B, min free ever %" PRIu32 " B",
+    ESP_LOGI(kTag,
+             "health: uptime %llu s, heap total %" PRIu32 " B (min %" PRIu32
+             " B), internal %u B (min %u B), dma %u B",
              esp_timer_get_time() / 1000000ULL, esp_get_free_heap_size(),
-             esp_get_minimum_free_heap_size());
+             esp_get_minimum_free_heap_size(),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)));
 
     // The dim schedule rides along on this timer rather than owning one. 30 s granularity is
     // imperceptible for a brightness change that happens twice a day, and one fewer timer is
@@ -774,7 +789,10 @@ extern "C" void app_main(void) {
         ESP_LOGE(kTag, "Wi-Fi unavailable; running offline");
     }
 
-    ESP_LOGI(kTag, "dashboard running; free heap: %" PRIu32 " bytes", esp_get_free_heap_size());
+    ESP_LOGI(kTag, "dashboard running; free heap: %" PRIu32 " B total, %u B internal, %u B DMA",
+             esp_get_free_heap_size(),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)));
 
     // app_main returns here. LVGL runs on the esp_lvgl_port task, plugin work runs on each
     // plugin's worker task, and PageManager's single lv_timer drives everything else. There is

@@ -10,11 +10,11 @@ See [IMPLEMENTATION_PLAN.md §1.1](IMPLEMENTATION_PLAN.md#11-spaces-in-the-proje
 
 ---
 
-## ⏭️ RESUME HERE — state at the end of the 13 August 2026 session
+## ⏭️ RESUME HERE — state at the end of the 14 August 2026 session
 
-**The device is on the network, telling the time, and configurable from a browser.** Stage 3
-(local core) and the whole of `dashboard_network` are done. Nothing is half-finished: the working
-tree is clean and every commit below was verified on hardware before it was made.
+**The device is on the network, telling the time, showing a real forecast, and configurable from a
+browser.** Stage 3 (local core), the whole of `dashboard_network`, and the first real integration
+are done. The working tree is clean and every commit was verified on hardware before it was made.
 
 ### What works right now, on the device
 
@@ -23,18 +23,25 @@ tree is clean and every commit below was verified on hardware before it was made
 | Wi-Fi | Connects to `More2.4` on boot from stored credentials |
 | First-run setup | Raises `DeskDashboard-Setup`, serves a form at `192.168.4.1`, takes credentials, connects |
 | Time | SNTP syncs and writes back to the RX8130CE; clock shows real local time |
+| **Weather** | **Live Open-Meteo forecast for the configured location, cached across reboots** |
 | Settings site | `http://deskdashboard.local` (or `http://192.168.2.182`) — weather location, timezone, clock face, PIN |
 | Header | Always-visible signal icon, far right |
 
+The settings site is **confirmed working from a browser** — the owner set a PIN through it and
+changed the weather location to Greenhithe, both of which the device read back correctly. That
+closes what was previously the second-biggest known gap.
+
 ### Pick up here
 
-**Next: the weather plugin.** `HttpsClient` exists and is proven against
-`api.open-meteo.com` but **has no callers yet** — weather is its first real one. The location it
-should read is already in `Settings` (`weather_label`, `latitude`, `longitude`) and is already
-editable from the settings page. Build it behind a `WeatherProvider` interface per §4.5, with a
-host-testable parser.
+**Next: the Elizabeth line plugin** (§4.5). `https://api.tfl.gov.uk/Line/Elizabeth/Status`,
+`statusSeverityDescription` plus disruption text, commute-aware refresh (2 min in the windows
+already in `Settings`, 10 min outside), optional app key **as a query parameter — which is exactly
+why `HttpsClient` never logs a query string**.
 
-Then, in order: **Elizabeth line** → **overview/KPI page** → to-dos → Claude → OTA.
+It is the second plugin to do TLS, so read §1.3 before starting: internal SRAM is the binding
+constraint on this board, and two concurrent handshakes have not yet been tried.
+
+Then, in order: **overview/KPI page** → to-dos → Claude → OTA.
 
 ### Decisions taken this session (do not reopen without a reason)
 
@@ -50,17 +57,24 @@ Then, in order: **Elizabeth line** → **overview/KPI page** → to-dos → Clau
 
 ### Known gaps, in rough priority order
 
-1. **`Authorization` is not stripped across a redirect.** `esp_http_client` follows redirects and
+1. **Internal SRAM headroom is thin — about 40 KB at the low-water mark.** See §1.3. This is the
+   constraint most likely to bite next, and it bites as a panic in an unrelated component rather
+   than as an allocation failure where the memory was spent.
+2. **`Authorization` is not stripped across a redirect.** `esp_http_client` follows redirects and
    nothing removes the header if the redirect crosses hosts. Close this before the first
-   credentialled API (Telegram, Claude) ships. Not urgent for Open-Meteo, which needs no auth.
-2. **The web pages have never been opened in a browser.** The HTTP layer is well tested — every
-   route, the settings round trip, the whole PIN lifecycle — but the rendering and the JavaScript
-   are not. First click will tell.
+   credentialled API (Telegram, Claude) ships. Not urgent for Open-Meteo or TfL, neither of which
+   uses a bearer token.
 3. **No captive-portal DNS hijack**, so the setup page has to be typed rather than popping up.
 4. **`components/dashboard_core/src/theme.cpp` and `web/style.css` duplicate the palette.** Change
    one, change the other.
-5. The `weather`, `elizabeth`, `todos`, `claude` and `settings` pages are still
-   `PlaceholderPlugin` — they render a description and fetch nothing.
+5. The `elizabeth`, `todos`, `claude` and `settings` pages are still `PlaceholderPlugin` — they
+   render a description and fetch nothing.
+6. **The weather page's LAYOUT has not been looked at by a human.** The data path is verified from
+   the serial log (fetch, parse, cache, restore); the arrangement of the hero temperature, the
+   details card and the six hour chips is arithmetic on paper, not an observation.
+7. **No host tests exist yet** (§4.8). `weather_model.{hpp,cpp}` was written to be testable — no
+   ESP-IDF, no LVGL, and `parseOpenMeteo` takes `now_utc` as an argument precisely so that hour
+   selection is deterministic — but there is no runner on this machine to test it with.
 
 ### A wanted feature, captured before it is forgotten
 
@@ -206,6 +220,58 @@ link against.
 So `test/host/` will be exercised by the GitHub Actions `host-tests` job on Ubuntu. To run it
 locally, install MSYS2 (`winget install MSYS2.MSYS2`) plus `mingw-w64-x86_64-gcc` and
 `mingw-w64-x86_64-cjson`. **Optional — do not treat as a blocker.**
+
+### 1.3 🔴 Internal SRAM is the binding constraint, and TLS is what spends it
+
+**Read this before adding anything that opens an HTTPS connection.**
+
+The first HTTPS request the weather page made after boot put the device into a **reboot loop**:
+
+```
+E esp-aes: Failed to allocate memory for start alignment buffer
+E esp-sha: Failed to allocate buf memory
+E esp-tls-mbedtls: mbedtls_ssl_handshake returned -0x0001
+E dma_utils: esp_dma_capable_malloc(181): Not enough heap memory
+assert failed: sdio_rx_get_buffer sdio_drv.c:670 (*buf)
+```
+
+Note where it actually died: **`esp_hosted`'s SDIO driver**, in an assert, several components away
+from the code that spent the memory. The TLS handshake exhausted internal SRAM, and then the Wi-Fi
+transport could not get a DMA-capable RX buffer and panicked. Chasing this from the assert alone
+would lead into the wrong component entirely.
+
+**Two things were wrong, both now fixed:**
+
+1. `CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC` was in force, so the 16 KB TLS input buffer, the output
+   buffer and the whole certificate-chain parse came out of internal SRAM. `sdkconfig.defaults`
+   claimed in a comment that "TLS buffers live in PSRAM" — it was never actually configured.
+   **Now `CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y`.**
+2. The health report printed only total free heap. That is ~31 MB of PSRAM and it **stayed at 31 MB
+   right up to the panic**, so the log actively hid the problem. It now prints internal and
+   DMA-capable free separately, plus the internal low-water mark.
+
+**Current figures, measured on device with the weather page fetching:**
+
+| | |
+| --- | --- |
+| Free heap, total | ~31.75 MB (PSRAM; almost meaningless as a health signal) |
+| Free internal | ~78 KB |
+| **Internal low-water mark** | **~40 KB** — the dip is the TLS handshake |
+| Free DMA-capable | ~39 KB |
+
+40 KB of headroom is workable but not comfortable, and **two plugins handshaking at the same time
+has not been tried**. If it panics again, the next levers, in order:
+
+* `CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN` — 16384 is the TLS maximum record size, and no API here
+  sends 16 KB records. 4096 is plenty and saves 12 KB per session.
+* `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` — moves Wi-Fi and lwIP buffers to PSRAM.
+* `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y` — frees handshake buffers once a session is established.
+* Serialise fetches across plugins, rather than letting each worker handshake whenever it likes.
+
+Related, found at the same time: esp_http_client's default 512-byte request buffer is **too small
+for these APIs** and logged `E HTTP_HEADER: Buffer length is small to fit all the headers` on every
+fetch. Open-Meteo's forecast URL is ~500 characters because it names every variable it wants.
+`HttpsClient` now sets `buffer_size_tx = 1024`.
 
 ---
 
@@ -461,9 +527,26 @@ Clock first (no API dependency), Claude last (experimental, must not block the o
 * **elizabeth_line** — `https://api.tfl.gov.uk/Line/Elizabeth/Status`,
   `statusSeverityDescription` + disruption text, commute-aware 2 min / 10 min intervals,
   optional app key, cache, restrained warning state. Parser host-tested.
-* **weather** — Open-Meteo behind a `WeatherProvider` interface, lat/lon from settings (no
-  geocoding per refresh), °C + km/h, current/high/low/rain-probability/next hours, ~20 min,
-  cache + stale display. Parser host-tested.
+* **weather** — ✅ **DONE.** Open-Meteo behind a `WeatherProvider` interface, lat/lon from settings
+  (no geocoding per refresh), °C + km/h, current/high/low/rain-probability/next six hours, 20 min
+  refresh, cached response restored at boot. Parser is host-*testable* but not yet host-*tested*
+  (§4.8 has no runner). Files:
+
+  | File | Contents |
+  | --- | --- |
+  | `include/plugins/weather_model.hpp` + `src/weather_model.cpp` | **ESP-free and LVGL-free.** `Sky`, `WeatherHour`, `WeatherData`, WMO code mapping (`skyFromWmoCode`, `skyDescription`, `wmoDescription`), 16-point `windCompass()`, and `parseOpenMeteo(json, len, now_utc, out)`. `now_utc` is an argument, not a clock read, so hour selection is deterministic. |
+  | `include/plugins/weather_provider.hpp` + `src/open_meteo.cpp` | `WeatherQuery`/`WeatherProvider` seam plus `OpenMeteoProvider`. Builds the URL, validates coordinates before spending a handshake on them, keeps the raw body for the caller to cache, and maps failures onto short user-facing reasons. 6 KB response buffer against a measured 2.2 KB response. |
+  | `include/plugins/weather_plugin.hpp` + `src/weather_plugin.cpp` | The page. No HTTP or JSON in it. Hero temperature at 250 %, details card (high/low, feels like, rain, wind, humidity, sunrise/sunset), six hour chips. `setLocation()` refetches only when the coordinates actually change. |
+
+  **The API's timestamp semantics were established by querying it, not from the documentation** —
+  see the comment block at the top of `weather_model.hpp`. Every `unixtime` value is a true UTC
+  epoch second; the documented "add `utc_offset_seconds` to daily timestamps" rule is **not** what
+  the service does, and following it would have put sunrise an hour out. `timezone=auto` is still
+  needed, because it decides that the daily high/low buckets are cut on the *local* calendar day.
+
+  One addition to the framework came out of this: `PluginBase::noteCachedData(fetched_utc)`. Without
+  it the state machine believed a cache-restoring plugin had never held data, so a failed first
+  refresh reported "Unavailable" over a screen full of numbers.
 * **todos** — Telegram `getUpdates` long poll (25 s) on its own task; single allowed user id;
   **task id derived from `update_id`** so re-processing is idempotent; `last_update_id` in
   NVS; `/list /today /done /delete /clearcompleted /help`; touch-complete,

@@ -122,6 +122,24 @@ CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=4096
 CONFIG_MBEDTLS_HARDWARE_SHA=y
 CONFIG_MBEDTLS_HARDWARE_AES=y
 
+# mbedTLS allocates from PSRAM, not internal SRAM. NOT optional on this board.
+#
+# The default (CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC) puts the 16 KB TLS input buffer, the output
+# buffer and the whole certificate-chain parse into internal SRAM. There is ~500 KB of that in
+# total on the ESP32-P4, and the display, LVGL and the esp_hosted SDIO driver have already taken
+# most of it by the time a plugin fetches anything.
+#
+# Observed with the default, on the first HTTPS request the weather page made after boot:
+#     E esp-aes: Failed to allocate memory for start alignment buffer
+#     E esp-sha: Failed to allocate buf memory
+#     E dma_utils: esp_dma_capable_malloc(181): Not enough heap memory
+#     assert failed: sdio_rx_get_buffer sdio_drv.c:670 (*buf)
+# — i.e. the TLS handshake exhausted internal RAM, then the Wi-Fi transport could not get a
+# DMA buffer and asserted, panicking the device into a reboot loop. The total-free-heap figure
+# stayed at 31 MB throughout, which is why the health report now prints internal and DMA
+# separately: the number that matters was never on screen.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+
 # ---------------------------------------------------------------------------------------
 # HTTP client / server
 # ---------------------------------------------------------------------------------------

@@ -122,6 +122,17 @@ class PluginBase : public DashboardPlugin {
     /// plugin is never scheduled for refresh. Call from onInitialise().
     void disable(const char* reason);
 
+    /// Declare that data from a PREVIOUS run is now on screen, stamped with when it was fetched.
+    /// For a plugin that loads a cached response in onInitialise().
+    ///
+    /// Without this the state machine believes the plugin has never held data, and the two places
+    /// that check `lastSuccessUtc() > 0` both get it wrong: a failed first refresh reports
+    /// "Unavailable" while cached values are plainly visible, and the footer never says how old
+    /// what you are looking at is. Moves the plugin to Stale, which is exactly what it is.
+    ///
+    /// Ignores a zero or older timestamp, so it can never walk the last-success time backwards.
+    void noteCachedData(std::time_t fetched_utc);
+
     /// Post a job to the plugin's worker without going through the refresh state machine.
     /// For side tasks such as persisting a task list after a touch interaction.
     bool postToWorker(Worker::Job job) { return worker_.post(std::move(job)); }
