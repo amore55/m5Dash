@@ -12,9 +12,9 @@ See [IMPLEMENTATION_PLAN.md §1.1](IMPLEMENTATION_PLAN.md#11-spaces-in-the-proje
 
 ## ⏭️ RESUME HERE — state at the end of the 14 August 2026 session
 
-**The device is on the network, telling the time, showing a real forecast, and configurable from a
-browser.** Stage 3 (local core), the whole of `dashboard_network`, and the first real integration
-are done. The working tree is clean and every commit was verified on hardware before it was made.
+**Three real pages: the clock, the weather, and the Elizabeth line.** Stage 3 (local core), the
+whole of `dashboard_network`, and the first two public integrations are done. The working tree is
+clean and every commit was verified on hardware before it was made.
 
 ### What works right now, on the device
 
@@ -24,6 +24,7 @@ are done. The working tree is clean and every commit was verified on hardware be
 | First-run setup | Raises `DeskDashboard-Setup`, serves a form at `192.168.4.1`, takes credentials, connects |
 | Time | SNTP syncs and writes back to the RX8130CE; clock shows real local time |
 | **Weather** | **Live Open-Meteo forecast for the configured location, cached across reboots** |
+| **Elizabeth line** | **Live status (worst-of), plus a 5-train departure board that turns round at midday** |
 | Settings site | `http://deskdashboard.local` (or `http://192.168.2.182`) — weather location, timezone, clock face, PIN |
 | Header | Always-visible signal icon, far right |
 
@@ -33,15 +34,22 @@ closes what was previously the second-biggest known gap.
 
 ### Pick up here
 
-**Next: the Elizabeth line plugin** (§4.5). `https://api.tfl.gov.uk/Line/Elizabeth/Status`,
-`statusSeverityDescription` plus disruption text, commute-aware refresh (2 min in the windows
-already in `Settings`, 10 min outside), optional app key **as a query parameter — which is exactly
-why `HttpsClient` never logs a query string**.
+**First, two small things left over from this session:**
 
-It is the second plugin to do TLS, so read §1.3 before starting: internal SRAM is the binding
-constraint on this board, and two concurrent handshakes have not yet been tried.
+1. **Look at the Elizabeth line page and say whether the layout works.** Its data path is verified
+   from the serial log; the arrangement is arithmetic on paper. Same caveat as the weather page had.
+2. The weather details card was bumped one step up the type scale at the owner's request
+   (`fontBody`/`fontTitle`). Confirm that reads well before treating it as settled.
 
-Then, in order: **overview/KPI page** → to-dos → Claude → OTA.
+**Then: the overview / KPI page**, which is the owner's own long-standing want — one screen showing
+the time, the line status without detail, the Claude percentage. It needs `summary()` added to
+`DashboardPlugin`/`PluginBase` so each plugin can report a headline value and state; three plugins
+now exist to summarise, which is what it was waiting for.
+
+Then, in order: to-dos (Telegram) → Claude → OTA.
+
+**Before to-dos or Claude, read §1.3 and close known gap 2** — those are the first plugins to carry
+a bearer token, and `Authorization` is not currently stripped across a cross-host redirect.
 
 ### Decisions taken this session (do not reopen without a reason)
 
@@ -57,9 +65,10 @@ Then, in order: **overview/KPI page** → to-dos → Claude → OTA.
 
 ### Known gaps, in rough priority order
 
-1. **Internal SRAM headroom is thin — about 40 KB at the low-water mark.** See §1.3. This is the
-   constraint most likely to bite next, and it bites as a panic in an unrelated component rather
-   than as an allocation failure where the memory was spent.
+1. **Internal SRAM headroom is thin — about 28 KB at the low-water mark with three pages.** See
+   §1.3 for the full measured table. This is the constraint most likely to bite next, and it bites
+   as a panic in an unrelated component rather than as an allocation failure where the memory was
+   spent. Each further plugin costs ~8 KB of worker stack before it fetches anything.
 2. **`Authorization` is not stripped across a redirect.** `esp_http_client` follows redirects and
    nothing removes the header if the redirect crosses hosts. Close this before the first
    credentialled API (Telegram, Claude) ships. Not urgent for Open-Meteo or TfL, neither of which
@@ -67,14 +76,24 @@ Then, in order: **overview/KPI page** → to-dos → Claude → OTA.
 3. **No captive-portal DNS hijack**, so the setup page has to be typed rather than popping up.
 4. **`components/dashboard_core/src/theme.cpp` and `web/style.css` duplicate the palette.** Change
    one, change the other.
-5. The `elizabeth`, `todos`, `claude` and `settings` pages are still `PlaceholderPlugin` — they
-   render a description and fetch nothing.
-6. **The weather page's LAYOUT has not been looked at by a human.** The data path is verified from
-   the serial log (fetch, parse, cache, restore); the arrangement of the hero temperature, the
-   details card and the six hour chips is arithmetic on paper, not an observation.
-7. **No host tests exist yet** (§4.8). `weather_model.{hpp,cpp}` was written to be testable — no
-   ESP-IDF, no LVGL, and `parseOpenMeteo` takes `now_utc` as an argument precisely so that hour
-   selection is deterministic — but there is no runner on this machine to test it with.
+5. The `todos`, `claude` and `settings` pages are still `PlaceholderPlugin` — they render a
+   description and fetch nothing.
+6. **The Elizabeth line page's LAYOUT has not been looked at by a human.** Its data path is verified
+   from the serial log (status parsed worst-of, 4-5 departures, cache restored at boot); the
+   arrangement of the status card and the board is arithmetic on paper. The weather page's layout
+   HAS now been seen and approved.
+7. **The board has only ever been seen in one direction.** It was built and tested in the evening,
+   so only the after-noon Liverpool Street → Abbey Wood board has run against the live API. The
+   morning direction (Abbey Wood, `direction=outbound`) was verified against the API from the
+   development machine but has not been rendered on device. Worth a look one morning.
+8. **The reason text is capped at three lines** with `LV_LABEL_LONG_DOT`, and at 512 characters in
+   `LineStatus`. An observed disruption message ran to ~600 characters, most of it a list of
+   operators accepting tickets. If the truncation loses something useful in practice, the fix is to
+   strip the boilerplate tail rather than to grow the box — the departure board needs the space.
+9. **No host tests exist yet** (§4.8). Both `weather_model` and `elizabeth_model` were written to be
+   testable — no ESP-IDF, no LVGL, and the parsers take the current time as an argument precisely so
+   they are deterministic — but there is no runner on this machine to test them with. Saved live
+   fixtures would be worth capturing while the API is fresh in mind.
 
 ### A wanted feature, captured before it is forgotten
 
@@ -250,23 +269,41 @@ would lead into the wrong component entirely.
    right up to the panic**, so the log actively hid the problem. It now prints internal and
    DMA-capable free separately, plus the internal low-water mark.
 
-**Current figures, measured on device with the weather page fetching:**
+**Then the Elizabeth line page arrived and the answer to "what if two plugins handshake at once"
+turned out to be: the low-water mark halves.** The full measured sequence, all on device, all with
+`heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)`:
 
-| | |
-| --- | --- |
-| Free heap, total | ~31.75 MB (PSRAM; almost meaningless as a health signal) |
-| Free internal | ~78 KB |
-| **Internal low-water mark** | **~40 KB** — the dip is the TLS handshake |
-| Free DMA-capable | ~39 KB |
+| Change | Internal free | **Internal low-water** |
+| --- | --- | --- |
+| mbedTLS in internal SRAM, weather only | — | **reboot loop** |
+| `MBEDTLS_EXTERNAL_MEM_ALLOC`, weather only | 78 KB | 40.5 KB |
+| \+ Elizabeth line, both workers fetching freely | 60 KB | **14.1 KB** |
+| \+ TLS serialised device-wide (`tlsGate`) | 63 KB | 22.0 KB |
+| \+ cJSON allocating from PSRAM | 61 KB | 23.4 KB |
+| \+ `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` | 65 KB | **28.2 KB** |
 
-40 KB of headroom is workable but not comfortable, and **two plugins handshaking at the same time
-has not been tried**. If it panics again, the next levers, in order:
+Two of those are structural and are the ones that matter:
 
-* `CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN` — 16384 is the TLS maximum record size, and no API here
-  sends 16 KB records. 4096 is plenty and saves 12 KB per session.
-* `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` — moves Wi-Fi and lwIP buffers to PSRAM.
-* `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y` — frees handshake buffers once a session is established.
-* Serialise fetches across plugins, rather than letting each worker handshake whenever it likes.
+* **Response buffers come from PSRAM** (`dashboard/net/response_buffer.hpp`). A `char buf[24576]`
+  member on a statically allocated plugin is 24 KB of internal SRAM for the life of the device.
+  This is why `WeatherProvider::fetch()` takes a buffer instead of owning one.
+* **One TLS session at a time, device-wide** (`tlsGate()` in `https_client.cpp`). This is what makes
+  the peak cost independent of how many plugins exist — the sixth integration cannot reintroduce
+  the crash. It is the single most valuable change here: +8 KB on its own.
+
+**A prediction that was wrong, recorded because it cost time:** cJSON's node allocations were
+expected to be the main remaining consumer. Moving them to PSRAM gained 1.4 KB, not the ~10 KB
+expected. The bulk of the transient demand is the TLS session itself. Do not re-derive this.
+
+**Still worth knowing:** each plugin's worker task adds ~8 KB of internal stack permanently, so
+todos and Claude will cost ~16 KB of the 65 KB baseline between them. If headroom gets tight again:
+
+* `CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN` is 16384, the TLS maximum record size. No API here sends
+  16 KB records; 4096 would do. (With EXTERNAL_MEM_ALLOC those buffers are already in PSRAM, so
+  the gain may be small — measure before believing it.)
+* `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y` frees handshake buffers once a session is established.
+* Reduce `workerStackBytes()` per plugin — the default 8192 is sized for a TLS handshake plus a
+  parse, and a plugin doing neither can be far smaller (the clock already uses 3072).
 
 Related, found at the same time: esp_http_client's default 512-byte request buffer is **too small
 for these APIs** and logged `E HTTP_HEADER: Buffer length is small to fit all the headers` on every
@@ -524,9 +561,41 @@ Clock first (no API dependency), Claude last (experimental, must not block the o
 
 * **clock** — two faces (minimal / split-flap), 24 h, `formatBritishDate`, seconds toggle,
   burn-in nudge using `cfg::kBurnInShiftPx`/`kBurnInPeriodMs`, no network need after sync.
-* **elizabeth_line** — `https://api.tfl.gov.uk/Line/Elizabeth/Status`,
-  `statusSeverityDescription` + disruption text, commute-aware 2 min / 10 min intervals,
-  optional app key, cache, restrained warning state. Parser host-tested.
+* **elizabeth_line** — ✅ **DONE.** Status plus a live departure board, commute-aware 2 min / 10 min
+  intervals, optional app key, cached status. Parser host-*testable*, not yet host-*tested*.
+
+  **The board turns round at midday**: before noon Abbey Wood → Liverpool Street, after noon
+  Liverpool Street → Abbey Wood, five departures either way. That is deliberately NOT tied to the
+  commute windows in Settings (those control refresh cadence only) — tying it to them would leave
+  the board blank-headed at 06:30 or 21:00, when which way you are going is still obvious.
+
+  | File | Contents |
+  | --- | --- |
+  | `include/plugins/elizabeth_model.hpp` + `src/elizabeth_model.cpp` | **ESP-free and LVGL-free.** `ServiceLevel`, `LineStatus`, `Departure`, `BoardData`, `parseLineStatus`, `parseArrivals`, plus `normalisePlatform`/`shortenDestination`. The header carries the five API findings below — read it before touching the filtering. |
+  | `include/plugins/tfl_provider.hpp` + `src/tfl_provider.cpp` | Naptan constants, `Journey`, and the two calls. Owns the direction/destination filtering so the page cannot get it subtly wrong. |
+  | `include/plugins/elizabeth_plugin.hpp` + `src/elizabeth_plugin.cpp` | Status card over departure board. Countdown re-renders every 250 ms tick from `timeToStation` aged by elapsed time, so it ticks down between refreshes. |
+
+  **Five things the live API does that the documentation does not prepare you for** — every one
+  established by querying it, and every one capable of producing a plausible, wrong board:
+
+  1. **A line can carry more than one `lineStatus` at once.** Observed: severity 9 "Minor Delays"
+     AND severity 6 "Severe Delays" simultaneously, for different sections. Taking the first would
+     have under-reported. The parser keeps the worst — and **lower severity is worse** in TfL's
+     scheme (10 = Good Service, 6 = Severe Delays, 2 = Suspended).
+  2. **`direction` inside a prediction is frequently an empty string**, so it cannot be used to
+     filter client-side. The `direction=` query parameter works and is applied server-side — and
+     halves the response, 31 KB → 15 KB at Liverpool Street.
+  3. **Liverpool Street has two stop points on this line.** `910GLIVSTLL` is the low-level core
+     platforms, where Abbey Wood trains run; `910GLIVST` is the mainline surface station. Use LL.
+  4. **A departure board must exclude trains terminating where you stand.** Abbey Wood's arrivals
+     include trains whose destination *is* Abbey Wood. Filter on `destinationNaptanId`, not on the
+     name — names come in inconsistent forms ("Paddington", but "Maidenhead Rail Station").
+  5. **Leaving Abbey Wood there is no single "towards Liverpool Street" destination**: trains show
+     as Paddington, Maidenhead, Heathrow, Reading or Hayes & Harlington. They all call at Liverpool
+     Street, because Abbey Wood is a terminus with one way out — so that board's rule is "everything
+     outbound", not "everything to Liverpool Street".
+
+  The feed is also **not sorted by time**, so the parser insertion-sorts into the five-slot array.
 * **weather** — ✅ **DONE.** Open-Meteo behind a `WeatherProvider` interface, lat/lon from settings
   (no geocoding per refresh), °C + km/h, current/high/low/rain-probability/next six hours, 20 min
   refresh, cached response restored at boot. Parser is host-*testable* but not yet host-*tested*

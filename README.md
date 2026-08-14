@@ -31,7 +31,8 @@ touch navigation.** Most integrations are not written yet.
 | **Settings web page** | ✅ `deskdashboard.local` — weather location, timezone, clock, PIN |
 | Storage (settings, tasks, cache) | ✅ Done and verified on hardware |
 | **Weather page** | ✅ **Real Open-Meteo forecast on device**, cached across reboots |
-| Elizabeth line · To-dos · Claude · Settings | 🔲 Placeholder pages only |
+| **Elizabeth line page** | ✅ **Live status + departure board**, turns round at midday |
+| To-dos · Claude · Settings | 🔲 Placeholder pages only |
 | OTA updates | 🔲 Architecture and partitions ready, service not written |
 | CI workflows, host unit tests | 🔲 Not started |
 | Stability | ✅ Runs with flat heap; boot reset-reason + 30 s health reporting |
@@ -155,7 +156,8 @@ components/
 plugins/                  one ESP-IDF component per page
   clock/                  ✅ implemented
   weather/                ✅ implemented — model + provider interface + page
-  elizabeth_line/ todos/ claude/ settings/            (planned)
+  elizabeth_line/         ✅ implemented — status + live departure board
+  todos/ claude/ settings/                            (planned)
 config/                   version, policy constants, placeholder example config
 docs/                     plan, backlog, flashing, OTA, configuration, Claude notes
 scripts/                  ESP-IDF activation helper, release tooling
@@ -281,8 +283,8 @@ See [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
 2. ~~Storage: settings with schema migrations, LittleFS, task store, response cache~~ ✅
 3. ~~Network: Wi-Fi manager, SNTP with RTC write-back, HTTPS client, setup portal and
    settings page~~ ✅
-4. ~~Weather (Open-Meteo), behind a provider interface, with a cached last-good forecast~~ ✅ —
-   next: Elizabeth line (TfL)
+4. ~~Weather (Open-Meteo) and the Elizabeth line (TfL), each behind a provider interface~~ ✅ —
+   next: the overview page
 5. Overview page: one screen of KPIs drawn from every plugin
 6. To-dos via Telegram long polling
 7. OTA: manifest, SHA-256 verification, channels, automatic rollback

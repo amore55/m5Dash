@@ -9,6 +9,7 @@
 #include "esp_log.h"
 
 #include "app_config.hpp"
+#include "dashboard/net/response_buffer.hpp"
 #include "dashboard/storage/cache_store.hpp"
 #include "dashboard/theme.hpp"
 #include "dashboard/time_utils.hpp"
@@ -99,25 +100,23 @@ void WeatherPlugin::loadCachedForecast() {
         return;
     }
 
-    // Heap rather than the stack: the response buffer is 6 KB and this runs on the application
-    // start-up task, whose stack is not sized for that. Freed before returning either way, so the
-    // cost is a few kilobytes for a few milliseconds at boot.
-    char* buffer = static_cast<char*>(std::malloc(OpenMeteoProvider::kResponseBytes));
-    if (buffer == nullptr) {
+    // PSRAM, not the stack: this runs on the application start-up task, whose stack is nowhere near
+    // 6 KB spare. Released when the buffer goes out of scope at the end of this function.
+    dashboard::net::ResponseBuffer buffer(OpenMeteoProvider::kResponseBytes);
+    if (!buffer.valid()) {
         ESP_LOGW(kTag, "no memory to read the cached forecast");
         return;
     }
 
     size_t length = 0;
-    const esp_err_t err =
-        CacheStore::get(kCacheKey, buffer, OpenMeteoProvider::kResponseBytes, &length);
+    const esp_err_t err = CacheStore::get(kCacheKey, buffer.data(), buffer.capacity(), &length);
     if (err == ESP_OK && length > 0) {
         // The clock has already been restored from the RTC by this point in the boot sequence, so
         // "which hours are still in the future" is usually answerable. If it is not, parseOpenMeteo
         // takes the first hours in the file and the next refresh corrects it.
         const std::time_t now = timeutil::systemTimeValid() ? timeutil::nowUtc() : 0;
         WeatherData cached;
-        if (OpenMeteoProvider::parseCached(buffer, length, now, cached)) {
+        if (OpenMeteoProvider::parseCached(buffer.data(), length, now, cached)) {
             {
                 std::lock_guard<std::mutex> lock(modelMutex());
                 data_ = cached;
@@ -133,8 +132,6 @@ void WeatherPlugin::loadCachedForecast() {
             CacheStore::remove(kCacheKey);
         }
     }
-
-    std::free(buffer);
 }
 
 // ---------------------------------------------------------------------------------------
@@ -188,8 +185,11 @@ lv_obj_t* WeatherPlugin::addDetailRow(lv_obj_t* parent, const char* name, bool s
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
 
-    theme::makeLabel(row, name, theme::fontLabel(), theme::textMuted());
-    return theme::makeLabel(row, kNoData, theme::fontBody(), theme::textPrimary());
+    // One step up the type scale from where these started (label/body): at desk distance the
+    // right-hand column was legible but not comfortable, and the card has the room because its
+    // height is LV_SIZE_CONTENT.
+    theme::makeLabel(row, name, theme::fontBody(), theme::textMuted());
+    return theme::makeLabel(row, kNoData, theme::fontTitle(), theme::textPrimary());
 }
 
 void WeatherPlugin::buildDetailsCard(lv_obj_t* parent) {
@@ -282,8 +282,18 @@ esp_err_t WeatherPlugin::fetch(bool force) {
     // network call, or setLocation() on the LVGL thread would stall for the whole HTTP timeout.
     query.now_utc = timeutil::systemTimeValid() ? timeutil::nowUtc() : 0;
 
+    // From PSRAM, and released when this returns. A member array would live in internal SRAM for
+    // the life of the device — see dashboard/net/response_buffer.hpp and docs/BACKLOG.md §1.3.
+    dashboard::net::ResponseBuffer buffer(OpenMeteoProvider::kResponseBytes);
+    if (!buffer.valid()) {
+        setError("out of memory");
+        return ESP_ERR_NO_MEM;
+    }
+
     WeatherData fresh;
-    const esp_err_t err = provider_.fetch(query, fresh);
+    size_t body_length = 0;
+    const esp_err_t err =
+        provider_.fetch(query, buffer.data(), buffer.capacity(), fresh, body_length);
     if (err != ESP_OK) {
         setError(provider_.lastError());
         return err;
@@ -294,15 +304,12 @@ esp_err_t WeatherPlugin::fetch(bool force) {
         data_ = fresh;
     }
 
-    // Cache the raw body, not the parsed struct — see WeatherProvider::lastBody(). A cache write
-    // failure is logged and otherwise ignored: the fetch itself succeeded, and failing the refresh
-    // over it would replace good data on screen with an error.
-    if (provider_.lastBody() != nullptr) {
-        const esp_err_t cache_err =
-            CacheStore::put(kCacheKey, provider_.lastBody(), provider_.lastBodyLength());
-        if (cache_err != ESP_OK) {
-            ESP_LOGW(kTag, "could not cache the forecast: %s", esp_err_to_name(cache_err));
-        }
+    // Cache the raw body while the buffer is still in scope. A cache write failure is logged and
+    // otherwise ignored: the fetch itself succeeded, and failing the refresh over it would replace
+    // good data on screen with an error.
+    const esp_err_t cache_err = CacheStore::put(kCacheKey, buffer.data(), body_length);
+    if (cache_err != ESP_OK) {
+        ESP_LOGW(kTag, "could not cache the forecast: %s", esp_err_to_name(cache_err));
     }
 
     return ESP_OK;

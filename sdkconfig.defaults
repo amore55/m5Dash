@@ -140,6 +140,11 @@ CONFIG_MBEDTLS_HARDWARE_AES=y
 # separately: the number that matters was never on screen.
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 
+# Wi-Fi and lwIP buffers from PSRAM too, for the same reason and with a measured effect: with two
+# plugins fetching, this raised the internal low-water mark from 23.4 KB to 28.2 KB. Note that it
+# is TRY_ALLOCATE — anything that genuinely needs DMA-capable internal memory still gets it.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
 # ---------------------------------------------------------------------------------------
 # HTTP client / server
 # ---------------------------------------------------------------------------------------

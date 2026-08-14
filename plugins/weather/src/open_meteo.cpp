@@ -54,7 +54,10 @@ bool OpenMeteoProvider::buildUrl(const WeatherQuery& query, char* out, size_t ca
     return written > 0 && static_cast<size_t>(written) < capacity;
 }
 
-esp_err_t OpenMeteoProvider::fetch(const WeatherQuery& query, WeatherData& out) {
+esp_err_t OpenMeteoProvider::fetch(const WeatherQuery& query, char* buffer, size_t capacity,
+                                   WeatherData& out, size_t& body_length) {
+    body_length = 0;
+
     char url[kUrlBytes];
     if (!buildUrl(query, url, sizeof(url))) {
         last_error_ = "location is not valid";
@@ -65,14 +68,8 @@ esp_err_t OpenMeteoProvider::fetch(const WeatherQuery& query, WeatherData& out) 
     dashboard::net::HttpRequest request;
     request.url = url;
 
-    // The previous body is invalidated before the request, not after a failure. Otherwise a failed
-    // fetch would leave lastBody() pointing at a stale-but-plausible response that the plugin would
-    // happily write back to the cache as if it were fresh.
-    body_valid_ = false;
-    body_length_ = 0;
-
     dashboard::net::HttpResponse response;
-    const esp_err_t err = http_.get(request, body_, sizeof(body_), response);
+    const esp_err_t err = http_.get(request, buffer, capacity, response);
     if (err != ESP_OK) {
         // Distinguish the failures a person can act on. "Too big" in particular is ours to fix,
         // not the network's, and saying "offline" for it would send someone to check their router.
@@ -88,14 +85,13 @@ esp_err_t OpenMeteoProvider::fetch(const WeatherQuery& query, WeatherData& out) 
         return err;
     }
 
-    if (!parseOpenMeteo(body_, response.length, query.now_utc, out)) {
+    if (!parseOpenMeteo(buffer, response.length, query.now_utc, out)) {
         last_error_ = "forecast response was not understood";
         ESP_LOGW(kTag, "parse failed on %u bytes", static_cast<unsigned>(response.length));
         return ESP_ERR_INVALID_RESPONSE;
     }
 
-    body_length_ = response.length;
-    body_valid_ = true;
+    body_length = response.length;
     last_error_ = "";
 
     ESP_LOGI(kTag, "%.1f C, %s, %u hours ahead, %u bytes", out.temperature_c,

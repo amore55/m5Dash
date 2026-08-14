@@ -34,31 +34,31 @@ class WeatherProvider {
   public:
     virtual ~WeatherProvider() = default;
 
-    /// Fetch and parse. **Worker thread.** Returns ESP_OK only when `out.valid` is true.
-    virtual esp_err_t fetch(const WeatherQuery& query, WeatherData& out) = 0;
+    /// Fetch and parse. **Worker thread.**
+    ///
+    /// The CALLER supplies the buffer, and on success `body_length` reports how much of it holds
+    /// the raw response — which is what the plugin writes to the cache. It caches the RESPONSE
+    /// rather than the parsed struct so that a firmware update adding a field can read new
+    /// information out of yesterday's body, with no second serialisation format to maintain.
+    ///
+    /// Buffer ownership sits with the caller because a provider-owned array would be a member of a
+    /// statically allocated plugin, and therefore permanently resident in internal SRAM. See
+    /// dashboard/net/response_buffer.hpp.
+    virtual esp_err_t fetch(const WeatherQuery& query, char* buffer, size_t capacity,
+                            WeatherData& out, size_t& body_length) = 0;
 
     /// A short, user-facing reason for the last failure — rendered in the page footer, so it must
     /// never contain a URL with a query string or anything credential-shaped.
     virtual const char* lastError() const = 0;
-
-    /// The raw body of the last successful fetch, so the plugin can cache it. Returns nullptr when
-    /// nothing has succeeded yet.
-    ///
-    /// The plugin caches the RESPONSE rather than the parsed struct: a firmware update that adds a
-    /// field can then read new information out of yesterday's cached body, and there is no second
-    /// serialisation format to keep in step with WeatherData.
-    virtual const char* lastBody() const = 0;
-    virtual size_t lastBodyLength() const = 0;
 };
 
 /// Open-Meteo's free `/v1/forecast` endpoint.
 class OpenMeteoProvider final : public WeatherProvider {
   public:
-    esp_err_t fetch(const WeatherQuery& query, WeatherData& out) override;
+    esp_err_t fetch(const WeatherQuery& query, char* buffer, size_t capacity, WeatherData& out,
+                    size_t& body_length) override;
 
     const char* lastError() const override { return last_error_; }
-    const char* lastBody() const override { return body_valid_ ? body_ : nullptr; }
-    size_t lastBodyLength() const override { return body_valid_ ? body_length_ : 0; }
 
     /// Parse a body this provider did not fetch — the cached copy from the previous boot.
     /// Static because it needs none of the instance's state, and being static makes it obvious at
@@ -67,11 +67,10 @@ class OpenMeteoProvider final : public WeatherProvider {
         return parseOpenMeteo(body, len, now_utc, out);
     }
 
-    /// Ceiling on the response buffer.
+    /// How much the caller should allocate.
     ///
     /// A two-day, three-variable hourly request measured 2191 bytes against the live API. 6 KB is
-    /// ample headroom for longer coordinate precision and any field Open-Meteo adds, while staying
-    /// small enough to sit in the plugin object rather than on the worker's stack.
+    /// ample headroom for longer coordinate precision and any field Open-Meteo adds.
     static constexpr size_t kResponseBytes = 6144;
 
   private:
@@ -81,10 +80,6 @@ class OpenMeteoProvider final : public WeatherProvider {
     bool buildUrl(const WeatherQuery& query, char* out, size_t capacity) const;
 
     dashboard::net::HttpsClient http_;
-
-    char body_[kResponseBytes] = {};
-    size_t body_length_ = 0;
-    bool body_valid_ = false;
 
     const char* last_error_ = "";
 };

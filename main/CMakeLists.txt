@@ -15,6 +15,8 @@ idf_component_register(
         # integration must not take the dashboard down" true at build time as well as run time.
         clock
         weather
+        elizabeth_line
+        json            # cJSON allocator hooks, pointed at PSRAM at boot
         mdns            # app_main advertises <hostname>.local once the link is up
         nvs_flash
 )

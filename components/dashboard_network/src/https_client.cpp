@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
@@ -28,6 +29,26 @@ const char* userAgent() {
         std::snprintf(ua, sizeof(ua), "DeskDashboard/%s", dash::kAppVersion);
     }
     return ua;
+}
+
+/// One TLS session at a time, across the whole device.
+///
+/// Each plugin has its own worker task, so without this their handshakes overlap — and a handshake
+/// is by far the largest transient demand on internal SRAM this firmware makes. Measured with the
+/// weather and Elizabeth line workers colliding on the same millisecond, the internal low-water
+/// mark fell from ~40 KB to **14 KB**. That is close enough to the failure that produced a reboot
+/// loop (see docs/BACKLOG.md §1.3) to be worth designing out rather than monitoring.
+///
+/// Serialising makes the peak the cost of ONE handshake no matter how many plugins exist, which
+/// means adding the sixth integration cannot quietly reintroduce the crash. The cost is that a
+/// plugin may wait for another's request; with refresh intervals of 2 to 20 minutes against a 12 s
+/// timeout, that is a rare few seconds on a background task nobody is watching.
+///
+/// Held per ATTEMPT, not across the whole retry schedule: sleeping out a 14 s backoff while
+/// holding it would block every other plugin for the duration, which is a different bug.
+std::mutex& tlsGate() {
+    static std::mutex gate;
+    return gate;
 }
 
 /// Should this failure be tried again?
@@ -217,7 +238,10 @@ esp_err_t HttpsClient::get(const HttpRequest& request, char* out, size_t capacit
 
     for (int attempt = 1; attempt <= attempts; ++attempt) {
         response = HttpResponse{};
-        err = attemptGet(request, safe_url, out, capacity, response);
+        {
+            std::lock_guard<std::mutex> gate(tlsGate());
+            err = attemptGet(request, safe_url, out, capacity, response);
+        }
         if (err == ESP_OK) {
             return ESP_OK;
         }

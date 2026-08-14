@@ -20,9 +20,10 @@
 #include <cinttypes>
 #include <cstdio>
 
+#include "cJSON.h"
 #include "esp_err.h"
-#include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -49,6 +50,7 @@
 
 #include "placeholder_plugin.hpp"
 #include "plugins/clock_plugin.hpp"
+#include "plugins/elizabeth_plugin.hpp"
 #include "plugins/weather_plugin.hpp"
 
 namespace {
@@ -66,9 +68,7 @@ plugins::ClockPlugin g_clock;
 
 plugins::WeatherPlugin g_weather;
 
-dash::PlaceholderPlugin g_elizabeth{"elizabeth", "Elizabeth line",
-                                    "Live service status from the TfL Unified API, refreshed "
-                                    "more often during configured commute hours."};
+plugins::ElizabethPlugin g_elizabeth;
 
 dash::PlaceholderPlugin g_todos{"todos", "To-dos",
                                 "Tasks captured by sending a message to a private Telegram bot, "
@@ -162,6 +162,13 @@ void applySettings(tab5::Board& board) {
     // thread-shared copy of it is behind the plugin's own mutex. A changed coordinate refetches.
     g_weather.setLocation(g_settings.latitude, g_settings.longitude,
                           g_settings.weather_label.c_str());
+
+    // These control how OFTEN the line is polled, not which way the departure board faces — that
+    // turns round at midday. See elizabeth_plugin.hpp.
+    g_elizabeth.setCommuteWindows(g_settings.commute_morning_start_minutes,
+                                  g_settings.commute_morning_end_minutes,
+                                  g_settings.commute_evening_start_minutes,
+                                  g_settings.commute_evening_end_minutes);
 }
 
 /// Evaluate the dim schedule and apply it. Cheap, and only touches the panel when the level
@@ -651,6 +658,34 @@ lv_obj_t* showBootScreen() {
     return boot;
 }
 
+/// Point cJSON's allocator at PSRAM. Must run before anything parses a response.
+///
+/// Every API this device reads is JSON, and parsing builds one small allocation per node — a few
+/// hundred of them for an 11 KB TfL arrivals document. CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL is
+/// 16384, meaning malloc() serves anything smaller than 16 KB from INTERNAL SRAM, so every one of
+/// those nodes lands in the scarcest memory on the board.
+///
+/// HONEST ACCOUNTING: this was expected to be the main remaining consumer of internal SRAM and it
+/// was not. Measured across a boot with both plugins fetching, it moved the internal low-water mark
+/// from 22.0 KB to 23.4 KB — real, but far less than predicted. The bulk of the transient demand is
+/// the TLS session itself, not the parse. Kept because it is the right home for this workload and
+/// because 1.4 KB of the scarcest memory is still 1.4 KB.
+///
+/// Lowering ALWAYSINTERNAL instead would have pushed every small allocation in lwIP, mbedtls and
+/// the drivers into slow PSRAM as well. This moves exactly the workload that should move: large,
+/// transient, and utterly insensitive to memory latency.
+void useExternalMemoryForJson() {
+    cJSON_Hooks hooks = {};
+    hooks.malloc_fn = [](size_t size) -> void* {
+        void* block = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+        // Fall back rather than fail a parse: an exhausted PSRAM pool should degrade, not break
+        // every page at once.
+        return (block != nullptr) ? block : heap_caps_malloc(size, MALLOC_CAP_DEFAULT);
+    };
+    hooks.free_fn = [](void* block) { heap_caps_free(block); };
+    cJSON_InitHooks(&hooks);
+}
+
 /// Initialise a plugin, logging rather than aborting on failure.
 ///
 /// A plugin that cannot start must never prevent the dashboard from booting — that is the whole
@@ -670,6 +705,9 @@ extern "C" void app_main(void) {
     ESP_LOGI(kTag, "%s v%s (%s)", dash::kProductName, dash::kAppVersion, dash::kGitSha);
     ESP_LOGI(kTag, "free heap at boot: %" PRIu32 " bytes", esp_get_free_heap_size());
     logResetReason();
+
+    // Before any plugin can parse a cached response at start-up.
+    useExternalMemoryForJson();
 
     ESP_ERROR_CHECK(initialiseNvs());
 

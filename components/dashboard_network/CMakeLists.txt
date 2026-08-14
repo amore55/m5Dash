@@ -3,6 +3,7 @@ idf_component_register(
         "src/wifi_manager.cpp"
         "src/web_server.cpp"
         "src/https_client.cpp"
+        "src/response_buffer.cpp"
         "src/time_sync.cpp"
     INCLUDE_DIRS
         "include"
