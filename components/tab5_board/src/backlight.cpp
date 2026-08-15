@@ -4,6 +4,7 @@
 
 #include "bsp/esp-bsp.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 namespace tab5 {
 namespace {
@@ -32,11 +33,29 @@ void Backlight::configure(int day_percent, int night_percent) {
 
 esp_err_t Backlight::applyNightMode(bool night) {
     night_active_ = night;
-    const int target = night ? night_percent_ : day_percent_;
+
+    // A wake outranks the schedule. The night state is still recorded above, so when the wake
+    // expires the next call settles to the correct level with no extra bookkeeping in the caller.
+    const int target = (night && !waking()) ? night_percent_ : day_percent_;
     if (target == applied_percent_) {
         return ESP_OK;
     }
     return apply(target);
+}
+
+void Backlight::wake(uint32_t duration_ms) {
+    const int64_t until = esp_timer_get_time() + (static_cast<int64_t>(duration_ms) * 1000);
+    // Extend, never shorten: a second touch during a wake should not cut the first one short.
+    if (until > wake_until_us_) {
+        wake_until_us_ = until;
+    }
+    if (applied_percent_ != day_percent_) {
+        apply(day_percent_);
+    }
+}
+
+bool Backlight::waking() const {
+    return wake_until_us_ != 0 && esp_timer_get_time() < wake_until_us_;
 }
 
 esp_err_t Backlight::setTemporary(int percent) {

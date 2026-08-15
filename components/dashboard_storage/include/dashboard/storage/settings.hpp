@@ -35,6 +35,10 @@ enum class ClaudeProvider : uint8_t {
 const char* toString(ClaudeProvider provider);
 ClaudeProvider claudeProviderFromString(const char* text);
 
+/// Floor under the DAYTIME brightness. See Settings::clampToValidRanges() for why night has no
+/// such floor and this does.
+constexpr int32_t kMinDayBrightnessPercent = 10;
+
 struct Settings {
     /// Bump ONLY when an existing field changes meaning or name. Adding fields does not need it.
     static constexpr uint32_t kCurrentSchema = 1;

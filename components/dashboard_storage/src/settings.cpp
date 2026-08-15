@@ -75,7 +75,15 @@ ClaudeProvider claudeProviderFromString(const char* text) {
 }
 
 void Settings::clampToValidRanges() {
-    brightness_percent = std::clamp<int32_t>(brightness_percent, 0, 100);
+    // The two brightnesses are clamped DIFFERENTLY, and the asymmetry is the point.
+    //
+    // Day brightness has a floor because nothing would ever raise it again: a device set to 0 all
+    // day is a black screen with no schedule and no event to recover it — indistinguishable from
+    // dead, reachable only by reflashing. 10 % is dim but unmistakably on.
+    //
+    // Night brightness may legitimately be 0 (a bedroom), and is survivable precisely because
+    // touching the screen wakes it to the day level — see Backlight::wake().
+    brightness_percent = std::clamp<int32_t>(brightness_percent, kMinDayBrightnessPercent, 100);
     night_brightness_percent = std::clamp<int32_t>(night_brightness_percent, 0, 100);
 
     dim_start_minutes = clampMinutes(dim_start_minutes);

@@ -13,6 +13,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include "esp_err.h"
 
 namespace tab5 {
@@ -41,6 +43,19 @@ class Backlight {
     /// gives immediate feedback without permanently defeating the schedule.
     esp_err_t setTemporary(int percent);
 
+    /// Bring the panel to the DAY level for `duration_ms`, then let the schedule resume.
+    ///
+    /// This is what makes a night level of 0 survivable. Without it, a dimmed-to-black dashboard is
+    /// indistinguishable from a dead one — which is exactly how this was first reported: "it
+    /// doesn't boot, it stays black", on a device that was running perfectly and answering HTTP.
+    ///
+    /// Calling it again while a wake is running extends the deadline rather than stacking, so
+    /// keeping a finger on the screen keeps it lit.
+    void wake(uint32_t duration_ms);
+
+    /// True while a wake() is still holding the panel up.
+    bool waking() const;
+
     int currentPercent() const { return applied_percent_; }
     int dayPercent() const { return day_percent_; }
     int nightPercent() const { return night_percent_; }
@@ -53,6 +68,10 @@ class Backlight {
     int night_percent_ = 12;
     int applied_percent_ = -1;  // -1 = nothing applied yet, so the first apply always writes
     bool night_active_ = false;
+
+    /// esp_timer microseconds at which an active wake expires. 0 = not waking.
+    /// Signed 64-bit, matching esp_timer_get_time(), so it cannot wrap in any realistic uptime.
+    int64_t wake_until_us_ = 0;
 };
 
 }  // namespace tab5

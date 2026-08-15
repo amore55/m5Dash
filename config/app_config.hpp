@@ -53,6 +53,20 @@ constexpr uint32_t kClockRefreshMs = 60u * 1000u;
 /// Telegram long-poll timeout handed to getUpdates. The HTTP timeout is this plus a margin.
 constexpr uint32_t kTelegramLongPollSeconds = 25;
 
+/// How long a touch holds the panel at day brightness before the dim schedule resumes.
+///
+/// This is what makes a dark night level usable rather than alarming: a dimmed dashboard is
+/// otherwise indistinguishable from a dead one. A minute is long enough to read a page and short
+/// enough that a knock to the desk does not light the room until morning.
+constexpr uint32_t kBacklightWakeMs = 60u * 1000u;
+
+/// How often the backlight policy (schedule + wake expiry) is evaluated.
+///
+/// One second, not the 30 s health tick it used to ride on: waking has to feel immediate, and at
+/// this rate the whole evaluation is an integer comparison plus a no-op call, because
+/// Backlight::applyNightMode() only writes the panel when the resulting level actually changes.
+constexpr uint32_t kBacklightTickMs = 1000;
+
 /// SNTP re-sync interval. The RX8130CE is written after every successful sync.
 constexpr uint32_t kNtpResyncMs = 6u * 60u * 60u * 1000u;        // 6 hours
 

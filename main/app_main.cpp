@@ -171,16 +171,32 @@ void applySettings(tab5::Board& board) {
                                   g_settings.commute_evening_end_minutes);
 }
 
-/// Evaluate the dim schedule and apply it. Cheap, and only touches the panel when the level
-/// actually changes, so it is safe to call from a slow periodic timer.
-void applyDimSchedule() {
-    const int minutes = dashboard::timeutil::localMinutesSinceMidnight();
-    if (minutes < 0) {
-        return;  // clock not set yet; leave brightness alone
+/// Last value seen from the gesture detector, so a touch is acted on once per press-poll.
+uint32_t g_last_touch_seen = 0;
+
+/// Evaluate the backlight policy: wake on touch, otherwise follow the dim schedule.
+///
+/// Cheap enough for a 1 s timer — applyNightMode() only writes the panel when the resulting level
+/// differs from what is already applied, so the steady state is a comparison and a return.
+void applyBacklightPolicy() {
+    tab5::Backlight& backlight = tab5::Board::instance().backlight();
+
+    // Any touch at all, including a tap that produced no gesture. Edge-detected against the last
+    // value rather than by measuring elapsed time, so this needs no LVGL call from the timer task.
+    const uint32_t touch = g_pages.gestures().lastTouchTick();
+    if (touch != 0 && touch != g_last_touch_seen) {
+        g_last_touch_seen = touch;
+        backlight.wake(dash::cfg::kBacklightWakeMs);
     }
-    const bool night = dashboard::timeutil::inTimeWindow(minutes, g_settings.dim_start_minutes,
-                                                         g_settings.dim_end_minutes);
-    tab5::Board::instance().backlight().applyNightMode(night);
+
+    const int minutes = dashboard::timeutil::localMinutesSinceMidnight();
+    // An unset clock counts as daytime rather than skipping the call. Returning early here would
+    // leave an expired wake holding the panel up forever, and "bright until the clock is known" is
+    // the safe way round in any case.
+    const bool night =
+        (minutes >= 0) && dashboard::timeutil::inTimeWindow(minutes, g_settings.dim_start_minutes,
+                                                            g_settings.dim_end_minutes);
+    backlight.applyNightMode(night);
 }
 
 /// Report why the device last restarted.
@@ -264,10 +280,6 @@ void healthTimerCb(void*) {
              static_cast<unsigned>(heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)),
              static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)));
 
-    // The dim schedule rides along on this timer rather than owning one. 30 s granularity is
-    // imperceptible for a brightness change that happens twice a day, and one fewer timer is
-    // one fewer thing to reason about.
-    applyDimSchedule();
 }
 
 void startHealthTimer() {
@@ -277,6 +289,20 @@ void startHealthTimer() {
     esp_timer_handle_t timer = nullptr;
     if (esp_timer_create(&args, &timer) == ESP_OK) {
         esp_timer_start_periodic(timer, kHealthReportPeriodUs);
+    }
+}
+
+/// The backlight policy used to ride on the 30 s health timer, on the reasoning that a brightness
+/// change happening twice a day did not need better granularity. Touch-to-wake changed that: a
+/// screen that lights up to a second after you touch it feels broken. It now owns a 1 s timer.
+void startBacklightTimer() {
+    esp_timer_create_args_t args = {};
+    args.callback = [](void*) { applyBacklightPolicy(); };
+    args.name = "backlight";
+    esp_timer_handle_t timer = nullptr;
+    if (esp_timer_create(&args, &timer) == ESP_OK) {
+        esp_timer_start_periodic(timer,
+                                 static_cast<uint64_t>(dash::cfg::kBacklightTickMs) * 1000ULL);
     }
 }
 
@@ -787,6 +813,8 @@ extern "C" void app_main(void) {
     }
 
     startHealthTimer();
+    // After the pages exist: the policy reads the gesture detector, which PageManager starts.
+    startBacklightTimer();
 
     // ---- Wi-Fi ------------------------------------------------------------------------
     //

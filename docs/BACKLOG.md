@@ -32,6 +32,40 @@ The settings site is **confirmed working from a browser** — the owner set a PI
 changed the weather location to Greenhithe, both of which the device read back correctly. That
 closes what was previously the second-biggest known gap.
 
+### The "it doesn't boot, it stays black" fault — diagnosed, and it was not a boot fault
+
+Worth reading before trusting any future report of a dead device, because the symptom was
+convincing and the cause was ordinary.
+
+The device was reported as not booting: black screen on power-on. It was in fact running perfectly
+— answering HTTP on its IP *and* on `deskdashboard.local`, and printing health reports over serial
+throughout. **The BSP logs every brightness change at INFO level**, and four saved boot captures all
+showed the same two lines:
+
+```
+I (2955)  Setting LCD backlight: 70%     <- boots, screen on
+I (33867) Setting LCD backlight: 12%     <- ~34 s later, night mode
+```
+
+It was 23:00, the dim window is 22:30-07:00, and 12 % on this panel reads as off. That is the whole
+fault. Two things made it worse than a misunderstanding, and both are now fixed:
+
+* **Nothing could wake it.** A dimmed screen and a dead one were indistinguishable.
+* **Nothing could change it.** The settings page had no brightness or dim-window fields at all, so
+  the only route to a brighter screen was a reflash.
+
+**Diagnostic lesson worth keeping: `grep backlight` across the saved serial captures answered in one
+step what reasoning about the display driver would not have.** The panel-detection failure in
+README is a real and famous fault on this board, and it is the wrong answer here — a black screen is
+not evidence of it when the firmware is demonstrably alive.
+
+Fixed by touch-to-wake (`Backlight::wake()`, driven from `GestureDetector::lastTouchTick()`),
+brightness and dim-window controls on the settings page, and an asymmetric clamp: night brightness
+may be 0, daytime brightness has a floor of 10 %. The asymmetry is the point — nothing would ever
+raise the day level again, so 0 there is a soft brick, whereas 0 at night is now recoverable with a
+finger. Note this also changed the dim tick from 30 s to 1 s, so at night the screen now dims about
+five seconds after boot rather than half a minute.
+
 ### Pick up here
 
 **First, two small things left over from this session:**
@@ -40,6 +74,12 @@ closes what was previously the second-biggest known gap.
    from the serial log; the arrangement is arithmetic on paper. Same caveat as the weather page had.
 2. The weather details card was bumped one step up the type scale at the owner's request
    (`fontBody`/`fontTitle`). Confirm that reads well before treating it as settled.
+3. **The new Screen section on the settings page has never been opened in a browser.** The
+   round trip is implemented on both sides (`brightness`, `night_brightness`, `dim_start`,
+   `dim_end`, and `min_brightness` reported by the device so the slider cannot disagree with the
+   firmware's clamp), and it builds — but the two range inputs and the two time inputs have not
+   been rendered. `style.css` has no rules for `input[type=range]` or `input[type=time]`, so they
+   will appear in browser default styling until someone decides they care.
 
 **Then: the overview / KPI page**, which is the owner's own long-standing want — one screen showing
 the time, the line status without detail, the Claude percentage. It needs `summary()` added to

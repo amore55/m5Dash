@@ -10,6 +10,7 @@
 
 #include "dashboard/net/wifi_manager.hpp"
 #include "dashboard/storage/secret_store.hpp"
+#include "dashboard/time_utils.hpp"
 
 namespace dashboard::net {
 namespace {
@@ -210,6 +211,37 @@ double formDouble(const char* body, const char* name, double fallback) {
     return value;
 }
 
+/// Parse a whole number, keeping `fallback` if the field is absent or malformed.
+///
+/// Same strictness as formDouble: trailing rubbish is a rejection, not something to salvage. A
+/// brightness that is quietly wrong is a screen you cannot read.
+int32_t formInt(const char* body, const char* name, int32_t fallback) {
+    char raw[24];
+    if (!findFormField(body, name, raw, sizeof(raw)) || raw[0] == '\0') {
+        return fallback;
+    }
+    char* end = nullptr;
+    const long value = std::strtol(raw, &end, 10);
+    if (end == raw || (end != nullptr && *end != '\0')) {
+        return fallback;
+    }
+    return static_cast<int32_t>(value);
+}
+
+/// Parse an "HH:MM" field into minutes since midnight, keeping `fallback` if absent or malformed.
+/// The browser's <input type="time"> submits exactly this shape.
+int32_t formHhMm(const char* body, const char* name, int32_t fallback) {
+    char raw[16];
+    if (!findFormField(body, name, raw, sizeof(raw)) || raw[0] == '\0') {
+        return fallback;
+    }
+    int minutes = 0;
+    if (!dashboard::timeutil::parseHhMm(raw, minutes)) {
+        return fallback;
+    }
+    return static_cast<int32_t>(minutes);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------------------
@@ -362,14 +394,25 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     jsonEscape(s.timezone.c_str(), tz, sizeof(tz));
     jsonEscape(s.clock_style.c_str(), face, sizeof(face));
 
+    // Dim window as "HH:MM", which is what <input type="time"> both expects and submits.
+    char dim_start[8];
+    char dim_end[8];
+    dashboard::timeutil::formatHhMm(dim_start, sizeof(dim_start), s.dim_start_minutes);
+    dashboard::timeutil::formatHhMm(dim_end, sizeof(dim_end), s.dim_end_minutes);
+
     // Sized for the escape buffers above at their worst case rather than their realistic one:
     // -Werror=format-truncation reasons about every %s being full and every %f being a 300-digit
     // double, not about a place name and a latitude.
-    char body[1536];
+    char body[1792];
     std::snprintf(body, sizeof(body),
                   "{\"ok\":true,\"weather_label\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,"
-                  "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s}",
-                  label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false");
+                  "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s,"
+                  "\"brightness\":%ld,\"night_brightness\":%ld,"
+                  "\"dim_start\":\"%s\",\"dim_end\":\"%s\",\"min_brightness\":%ld}",
+                  label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
+                  static_cast<long>(s.brightness_percent),
+                  static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
+                  static_cast<long>(dashboard::storage::kMinDayBrightnessPercent));
     return httpd_resp_sendstr(req, body);
 }
 
@@ -409,6 +452,12 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
     }
     edited.latitude = formDouble(body, "latitude", edited.latitude);
     edited.longitude = formDouble(body, "longitude", edited.longitude);
+
+    edited.brightness_percent = formInt(body, "brightness", edited.brightness_percent);
+    edited.night_brightness_percent =
+        formInt(body, "night_brightness", edited.night_brightness_percent);
+    edited.dim_start_minutes = formHhMm(body, "dim_start", edited.dim_start_minutes);
+    edited.dim_end_minutes = formHhMm(body, "dim_end", edited.dim_end_minutes);
 
     secureZero(body, sizeof(body));
 

@@ -112,6 +112,13 @@ void GestureDetector::poll() {
 
     const bool down = (lv_indev_get_state(indev_) == LV_INDEV_STATE_PRESSED);
 
+    // Recorded before any of the state machine below, and regardless of enabled_ or of whether the
+    // press turns into a gesture. Touch-to-wake has to work when gesture recognition is suspended
+    // for a modal, and it has to work for a tap — which by design produces no gesture at all.
+    if (down) {
+        last_touch_tick_.store(lv_tick_get(), std::memory_order_relaxed);
+    }
+
     if (down && !pressing_) {
         // ---- press began ----
         pressing_ = true;

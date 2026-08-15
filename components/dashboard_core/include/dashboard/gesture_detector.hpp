@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 
@@ -59,6 +60,17 @@ class GestureDetector {
     /// page that wants long-press for its own purpose).
     void setLongPressEnabled(bool enabled) { long_press_enabled_ = enabled; }
 
+    /// `lv_tick_get()` at the most recent touch of ANY kind. 0 until the screen is first touched.
+    ///
+    /// Deliberately separate from the gesture callback, because the thing that needs it —
+    /// touch-to-wake — must respond to a plain tap, and a plain tap produces no gesture at all by
+    /// design. Reaching for the callback would mean waking only on a swipe, which is not what
+    /// anyone does to a screen that appears to be off.
+    ///
+    /// Atomic because it is written on the LVGL thread and read from the timer task that owns
+    /// the backlight.
+    uint32_t lastTouchTick() const { return last_touch_tick_.load(std::memory_order_relaxed); }
+
   private:
     static void timerCb(lv_timer_t* timer);
     void poll();
@@ -87,6 +99,9 @@ class GestureDetector {
     /// case so that long-pressing a task row cannot be hijacked into opening Settings.
     /// Swipes remain armed — the dominance check keeps them distinguishable from a scroll.
     bool press_on_clickable_ = false;
+
+    /// Written by poll() on the LVGL thread, read by the backlight timer task.
+    std::atomic<uint32_t> last_touch_tick_{0};
 
     bool cooldown_active_ = false;
     uint32_t cooldown_started_tick_ = 0;

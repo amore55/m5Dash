@@ -89,6 +89,25 @@
         <option value="1">Shown</option>
       </select>
 
+      <h2>Screen</h2>
+      <label for="brightness">Daytime brightness</label>
+      <input id="brightness" type="range" min="10" max="100" step="5">
+      <p class="note" id="brightness_note">70%</p>
+
+      <label for="night_brightness">Night brightness</label>
+      <input id="night_brightness" type="range" min="0" max="100" step="5">
+      <p class="note" id="night_note">12%</p>
+
+      <label for="dim_start">Dim from</label>
+      <input id="dim_start" type="time">
+      <label for="dim_end">Dim until</label>
+      <input id="dim_end" type="time">
+      <p class="note">
+        Touching the screen brings it back to daytime brightness for a minute, so night brightness
+        can safely be set to 0 to turn the panel off completely. Set both times the same to switch
+        dimming off altogether.
+      </p>
+
       <button type="submit" id="go">Save</button>
     </form>
     <div class="msg" id="msg"></div>
@@ -192,7 +211,25 @@
     if (!found) { preset.value = '__custom__'; }
     $('timezone').value = s.timezone || '';
     syncTzCustom();
+
+    // The device reports its own floor rather than the page hard-coding one, so the slider and
+    // the firmware's clamp can never disagree about the dimmest usable daytime setting.
+    if (s.min_brightness) { $('brightness').min = s.min_brightness; }
+    $('brightness').value = s.brightness;
+    $('night_brightness').value = s.night_brightness;
+    $('dim_start').value = s.dim_start || '22:30';
+    $('dim_end').value = s.dim_end || '07:00';
+    syncBrightnessNotes();
   }
+
+  // A range input with no read-out is a guess. These show the number being chosen.
+  function syncBrightnessNotes() {
+    $('brightness_note').textContent = $('brightness').value + '%';
+    var night = $('night_brightness').value;
+    $('night_note').textContent = night === '0' ? 'Off - touch the screen to wake it' : night + '%';
+  }
+  $('brightness').addEventListener('input', syncBrightnessNotes);
+  $('night_brightness').addEventListener('input', syncBrightnessNotes);
 
   function syncTzCustom() {
     $('tz-custom-wrap').hidden = $('tz_preset').value !== '__custom__';
@@ -251,7 +288,11 @@
       longitude: $('longitude').value,
       timezone: $('tz_preset').value === '__custom__' ? $('timezone').value : $('tz_preset').value,
       clock_style: $('clock_style').value,
-      show_seconds: $('show_seconds').value
+      show_seconds: $('show_seconds').value,
+      brightness: $('brightness').value,
+      night_brightness: $('night_brightness').value,
+      dim_start: $('dim_start').value,
+      dim_end: $('dim_end').value
     }).then(function () {
       Dash.say('Saved.', 'ok');
       $('go').disabled = false;
