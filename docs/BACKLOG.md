@@ -59,6 +59,12 @@ step what reasoning about the display driver would not have.** The panel-detecti
 README is a real and famous fault on this board, and it is the wrong answer here — a black screen is
 not evidence of it when the firmware is demonstrably alive.
 
+**Verified: dimming follows the schedule, and a tap raises the panel to 70 % (observed twice).
+NOT yet verified: the 60 s wake expiring back to night brightness.** Three attempts to observe it
+failed for the reason in §1.1b — closing the monitor rebooted the device and wiped the wake. The
+logic is four lines and reviewable, but it has not been seen working. Confirming it takes ten
+seconds with the device in hand: tap it at night, wait a minute, watch it dim again.
+
 Fixed by touch-to-wake (`Backlight::wake()`, driven from `GestureDetector::lastTouchTick()`),
 brightness and dim-window controls on the settings page, and an asymmetric clamp: night brightness
 may be 0, daytime brightness has a floor of 10 %. The asymmetry is the point — nothing would ever
@@ -268,6 +274,31 @@ equivalent alternative for interactive use.
 One benign warning always appears and can be ignored (it is a missing diagnostic file in the
 virtualenv, not a fault):
 `WARNING: ... No such file or directory: '...idf5.4_py3.11_env\idf_version.txt'`
+
+### 1.1b Closing the serial monitor REBOOTS the device
+
+Measured directly, and it invalidated three attempts at an on-device observation before it was
+spotted. Two consecutive `miniterm` sessions five seconds apart:
+
+```
+first open : uptime 62 s
+second open: uptime 32 s      <- went BACKWARDS
+```
+
+The ESP32-P4's native USB-serial-JTAG resets the chip when the host closes the port. Consequences
+for any hardware verification done from a script:
+
+* **Everything must happen inside ONE monitor session.** A test of the shape "do a thing, then
+  close the monitor, wait, reopen and look" tests a freshly booted device, not the thing you did.
+  This is how touch-to-wake's 60 s expiry evaded three separate captures.
+* Every capture appears to start at a similar uptime — roughly the gap since the last capture
+  closed. That is the tell.
+* `run_in_background` a single long capture instead of chaining short ones.
+
+Also, unrelated but in the same family: **redirect `python -u`**, not plain `python`. Python
+block-buffers stdout to a file, and force-killing the process discards whatever has not flushed.
+Boot captures look complete only because boot produces enough output to fill the buffer; a quiet
+device logging one line every 30 s can lose the lot.
 
 ### 1.2 Host unit tests remain CI-only
 
