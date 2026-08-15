@@ -237,6 +237,7 @@ bool parseArrivals(const char* json_text, size_t len, const char* require_destin
 
         Departure departure;
         departure.seconds_away = seconds;
+        departure.destination_naptan.assign(destination_naptan);
 
         char raw[96] = {};
         if (json::string(prediction, "destinationName", raw, sizeof(raw))) {
@@ -267,6 +268,152 @@ bool parseArrivals(const char* json_text, size_t len, const char* require_destin
 
     out.valid = true;
     return true;
+}
+
+// ---------------------------------------------------------------------------------------
+// Per-train status
+// ---------------------------------------------------------------------------------------
+
+const char* departureStatusText(DepartureStatus status) {
+    switch (status) {
+        case DepartureStatus::OnTime:
+            return "On time";
+        case DepartureStatus::Delayed:
+            return "Delayed";
+        case DepartureStatus::Cancelled:
+            return "Cancelled";
+        case DepartureStatus::Unknown:
+        default:
+            // Deliberately empty rather than "Unknown": a board that cannot vouch for a train
+            // should say nothing about it, not label it. See the header note on partial coverage.
+            return "";
+    }
+}
+
+bool parseMinutesSeconds(const char* text, int32_t& seconds) {
+    if (text == nullptr || text[0] == '\0') {
+        return false;
+    }
+    const char* colon = std::strchr(text, ':');
+    if (colon == nullptr || colon == text || colon[1] == '\0') {
+        return false;
+    }
+
+    int32_t minutes = 0;
+    for (const char* p = text; p < colon; ++p) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+        minutes = minutes * 10 + (*p - '0');
+    }
+
+    int32_t secs = 0;
+    for (const char* p = colon + 1; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') {
+            return false;
+        }
+        secs = secs * 10 + (*p - '0');
+    }
+
+    seconds = minutes * 60 + secs;
+    return true;
+}
+
+namespace {
+
+DepartureStatus statusFromText(const char* text) {
+    if (text == nullptr) {
+        return DepartureStatus::Unknown;
+    }
+    // TfL spells these without a separator. Only these three were observed across four stations;
+    // anything else is left Unknown rather than guessed at, because a wrong status on a departure
+    // board is worse than no status.
+    if (std::strcmp(text, "OnTime") == 0) {
+        return DepartureStatus::OnTime;
+    }
+    if (std::strcmp(text, "Delayed") == 0) {
+        return DepartureStatus::Delayed;
+    }
+    if (std::strcmp(text, "Cancelled") == 0) {
+        return DepartureStatus::Cancelled;
+    }
+    return DepartureStatus::Unknown;
+}
+
+}  // namespace
+
+bool parseDepartureStatuses(const char* json_text, size_t len, StatusTable& out) {
+    out = StatusTable{};
+
+    json::Doc doc;
+    if (!doc.parse(json_text, len)) {
+        return false;
+    }
+
+    const cJSON* entries = doc.root();
+    const size_t count = json::arraySize(entries);
+
+    for (size_t i = 0; i < count && out.count < StatusTable::kMaxHints; ++i) {
+        const cJSON* entry = json::at(entries, i);
+        if (entry == nullptr) {
+            continue;
+        }
+
+        // The discriminator between a departure and an arrival. An entry with no time-to-departure
+        // is a train terminating here, and has no place on a board of trains leaving.
+        char countdown[16] = {};
+        if (!json::string(entry, "minutesAndSecondsToDeparture", countdown, sizeof(countdown))) {
+            continue;
+        }
+        int32_t seconds = 0;
+        if (!parseMinutesSeconds(countdown, seconds)) {
+            continue;
+        }
+
+        char status_text[24] = {};
+        json::string(entry, "departureStatus", status_text, sizeof(status_text));
+        const DepartureStatus status = statusFromText(status_text);
+        if (status == DepartureStatus::Unknown) {
+            continue;  // nothing to contribute
+        }
+
+        StatusHint& hint = out.hints[out.count++];
+        hint.seconds_away = seconds;
+        hint.status = status;
+        json::string(entry, "destinationNaptanId", hint.destination_naptan,
+                     sizeof(hint.destination_naptan));
+    }
+
+    return true;
+}
+
+void applyDepartureStatuses(const StatusTable& table, BoardData& board) {
+    for (size_t i = 0; i < board.count; ++i) {
+        Departure& departure = board.departures[i];
+
+        int32_t best_gap = kStatusMatchSeconds + 1;
+        DepartureStatus best = DepartureStatus::Unknown;
+
+        for (size_t j = 0; j < table.count; ++j) {
+            const StatusHint& hint = table.hints[j];
+            if (hint.destination_naptan[0] != '\0' &&
+                !departure.destination_naptan.equals(hint.destination_naptan)) {
+                continue;
+            }
+            int32_t gap = hint.seconds_away - departure.seconds_away;
+            if (gap < 0) {
+                gap = -gap;
+            }
+            if (gap < best_gap) {
+                best_gap = gap;
+                best = hint.status;
+            }
+        }
+
+        if (best_gap <= kStatusMatchSeconds) {
+            departure.status = best;
+        }
+    }
 }
 
 }  // namespace plugins

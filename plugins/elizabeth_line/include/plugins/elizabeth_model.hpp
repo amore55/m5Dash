@@ -94,9 +94,24 @@ bool parseLineStatus(const char* json, size_t len, LineStatus& out);
 // Departure board
 // ---------------------------------------------------------------------------------------
 
+/// Per-train status, from TfL's `departureStatus`.
+///
+/// Unknown is a real and common outcome, not a parse failure — see parseDepartureStatuses().
+/// The board renders it as a blank rather than inventing "On time".
+enum class DepartureStatus : uint8_t {
+    Unknown,
+    OnTime,
+    Delayed,
+    Cancelled,
+};
+
+const char* departureStatusText(DepartureStatus status);
+
 struct Departure {
     /// When it is expected, UTC. Rendered as the local "22:11" on the board.
     std::time_t expected_utc = 0;
+
+    DepartureStatus status = DepartureStatus::Unknown;
 
     /// TfL's `timeToStation`, in seconds. This is the countdown the board shows, and it comes
     /// straight from the feed rather than being derived from expected_utc minus now — the feed's
@@ -104,6 +119,10 @@ struct Departure {
     int32_t seconds_away = 0;
 
     dashboard::MediumString destination;
+
+    /// Kept alongside the display name because it is what the status endpoint can be matched on —
+    /// names arrive in inconsistent forms between the two feeds, naptans do not.
+    dashboard::ShortString destination_naptan;
 
     /// "4", "A", or empty when the feed says "Platform Unknown". Normalised — see
     /// normalisePlatform().
@@ -143,5 +162,72 @@ void shortenDestination(const char* raw, char* out, size_t capacity);
 /// sorted.
 bool parseArrivals(const char* json, size_t len, const char* require_destination_naptan,
                    const char* exclude_destination_naptan, BoardData& out);
+
+// ---------------------------------------------------------------------------------------
+// Per-train status, from a second endpoint
+// ---------------------------------------------------------------------------------------
+//
+// WHY THIS IS A SEPARATE CALL RATHER THAN A BETTER ONE
+//
+// `StopPoint/{id}/ArrivalDepartures` is the only TfL endpoint that reports whether an individual
+// train is delayed or cancelled, and it looks at first like a straight upgrade over `Arrivals`:
+// smaller, and it carries scheduled AND estimated times like a real departure board.
+//
+// It cannot replace `Arrivals`, because **every time field on it is named `...OfArrival`**. At a
+// terminus you are originating, so there is no arrival time and those fields come back EMPTY.
+// Measured at Abbey Wood: 8 entries, of which 2 were usable departures, both with no scheduled or
+// estimated time at all. The same call at Liverpool Street — a through station — returned 4 usable
+// departures with full times. Switching wholesale would have halved the morning board and stripped
+// its clock times, to gain a status column.
+//
+// So the board keeps coming from `Arrivals`, and this endpoint is consulted only to answer "is any
+// of these cancelled or delayed". Coverage is therefore partial by design, and worst exactly where
+// the data is thinnest — which is why DepartureStatus::Unknown renders as a blank.
+
+/// One train's status, keyed by where it is going and how far away it is. There is no train ID
+/// shared between the two endpoints, so the match is on those two facts — see applyDepartureStatuses.
+struct StatusHint {
+    char destination_naptan[20] = {};
+    int32_t seconds_away = 0;
+    DepartureStatus status = DepartureStatus::Unknown;
+};
+
+struct StatusTable {
+    /// Must exceed what a busy station returns, not what the board shows.
+    ///
+    /// This was 16, and the first device run filled it exactly — Liverpool Street returned 21
+    /// entries covering both directions and several branches. Entries are kept in feed order, so a
+    /// cap below the station's total silently drops whichever trains happen to sort late, and the
+    /// board loses their status for no visible reason. 32 clears the largest observed response with
+    /// room to spare, at ~900 bytes on the worker stack.
+    static constexpr size_t kMaxHints = 32;
+    StatusHint hints[kMaxHints];
+    size_t count = 0;
+};
+
+/// Parse `GET /StopPoint/{naptan}/ArrivalDepartures?lineIds=elizabeth`.
+///
+/// Keeps only entries with a `minutesAndSecondsToDeparture` — the presence of that field is what
+/// distinguishes a train LEAVING from one merely arriving, and it replaces the naptan-exclusion
+/// rule at a terminus far more directly.
+bool parseDepartureStatuses(const char* json, size_t len, StatusTable& out);
+
+/// "10:9" or "04:39" -> seconds. TfL does not zero-pad the seconds, so "6:3" is six minutes and
+/// three seconds, not six minutes and thirty. Returns false on anything else.
+bool parseMinutesSeconds(const char* text, int32_t& seconds);
+
+/// Copy statuses onto a board, matching by destination and by time-to-go.
+///
+/// The two endpoints share no train identifier, so this pairs a board entry with the status entry
+/// that has the same destination and the closest departure time, within kStatusMatchSeconds. A
+/// board entry with no match keeps DepartureStatus::Unknown, which is honest: it means "this
+/// endpoint did not mention this train", not "this train is fine".
+void applyDepartureStatuses(const StatusTable& table, BoardData& board);
+
+/// How far apart the two endpoints' countdowns may be and still be the same train.
+///
+/// They are sampled seconds apart and round differently, so exact equality never matches. Elizabeth
+/// line headways in the core are 5 minutes at worst, so 150 s cannot reach the adjacent train.
+constexpr int32_t kStatusMatchSeconds = 150;
 
 }  // namespace plugins

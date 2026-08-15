@@ -106,6 +106,7 @@ class ElizabethPlugin final : public dashboard::PluginBase {
         lv_obj_t* time = nullptr;
         lv_obj_t* destination = nullptr;
         lv_obj_t* platform = nullptr;
+        lv_obj_t* status = nullptr;
         lv_obj_t* countdown = nullptr;
     };
     BoardRow rows_[BoardData::kMaxDepartures];

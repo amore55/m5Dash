@@ -149,4 +149,48 @@ esp_err_t TflProvider::fetchBoard(Journey journey, char* buffer, size_t capacity
     return ESP_OK;
 }
 
+esp_err_t TflProvider::fetchDepartureStatuses(Journey journey, char* buffer, size_t capacity,
+                                              StatusTable& out) {
+    const char* origin = (journey == Journey::ToLiverpoolStreet) ? stops::kAbbeyWood
+                                                                 : stops::kLiverpoolStreet;
+
+    // No direction parameter on this endpoint — it is StopPoint-scoped, not Line-scoped. The
+    // departure/arrival split is done by the parser instead, on whether an entry has a
+    // time-to-departure at all.
+    char url[kUrlBytes];
+    std::snprintf(url, sizeof(url),
+                  "https://api.tfl.gov.uk/StopPoint/%s/ArrivalDepartures?lineIds=elizabeth",
+                  origin);
+    if (!appendAppKey(url, sizeof(url))) {
+        last_error_ = "internal error";
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    dashboard::net::HttpRequest request;
+    request.url = url;
+    // One attempt, not the usual three. This is enrichment: if it fails the board is still correct,
+    // just without status, and spending the full retry schedule would delay a refresh that has
+    // already succeeded.
+    request.max_attempts = 1;
+
+    dashboard::net::HttpResponse response;
+    const esp_err_t err = http_.get(request, buffer, capacity, response);
+    if (err != ESP_OK) {
+        // Deliberately does NOT set last_error_: the caller keeps its board, and putting this in
+        // the footer would report a page as degraded when the thing a person reads off it is fine.
+        ESP_LOGW(kTag, "departure status unavailable: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (!parseDepartureStatuses(buffer, response.length, out)) {
+        ESP_LOGW(kTag, "departure status parse failed on %u bytes",
+                 static_cast<unsigned>(response.length));
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+
+    ESP_LOGI(kTag, "departure status: %u entries from %u bytes", static_cast<unsigned>(out.count),
+             static_cast<unsigned>(response.length));
+    return ESP_OK;
+}
+
 }  // namespace plugins

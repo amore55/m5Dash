@@ -31,7 +31,7 @@ touch navigation.** Most integrations are not written yet.
 | **Settings web page** | ✅ `deskdashboard.local` — weather location, timezone, clock, PIN |
 | Storage (settings, tasks, cache) | ✅ Done and verified on hardware |
 | **Weather page** | ✅ **Real Open-Meteo forecast on device**, cached across reboots |
-| **Elizabeth line page** | ✅ **Live status + departure board**, turns round at midday |
+| **Elizabeth line page** | ✅ **Live status + departure board** with delays and cancellations, turns round at midday |
 | To-dos · Claude · Settings | 🔲 Placeholder pages only |
 | OTA updates | 🔲 Architecture and partitions ready, service not written |
 | CI workflows, host unit tests | 🔲 Not started |

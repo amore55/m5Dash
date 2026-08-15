@@ -24,7 +24,7 @@ clean and every commit was verified on hardware before it was made.
 | First-run setup | Raises `DeskDashboard-Setup`, serves a form at `192.168.4.1`, takes credentials, connects |
 | Time | SNTP syncs and writes back to the RX8130CE; clock shows real local time |
 | **Weather** | **Live Open-Meteo forecast for the configured location, cached across reboots** |
-| **Elizabeth line** | **Live status (worst-of), plus a 5-train departure board that turns round at midday** |
+| **Elizabeth line** | **Live status (worst-of), plus a 5-train board with per-train delay/cancellation, turning round at midday** |
 | Settings site | `http://deskdashboard.local` (or `http://192.168.2.182`) — weather location, timezone, clock face, PIN |
 | Header | Always-visible signal icon, far right |
 
@@ -72,12 +72,28 @@ raise the day level again, so 0 there is a soft brick, whereas 0 at night is now
 finger. Note this also changed the dim tick from 30 s to 1 s, so at night the screen now dims about
 five seconds after boot rather than half a minute.
 
+### Wanted on the Elizabeth line page — not started
+
+**National Rail departures through Abbey Wood.** Alongside the Elizabeth line board, show the next
+few trains through Abbey Wood on the Southeastern side. **These are not in the TfL feed** — Abbey
+Wood's mainline services are National Rail, so this needs a different upstream (Rail Data
+Marketplace / the Darwin push-port feed, or an LDBWS-style departure-board web service), which means
+its own credential, its own contract, and its own provider behind the same interface pattern.
+
+Deliberately deferred. Worth scoping the data source before designing the page — the National Rail
+options differ a lot in what they cost, whether they need a SOAP client the device can't reasonably
+run, and whether a relay would be needed. Given the ~28 KB internal-SRAM headroom (§1.3), a fourth
+HTTPS caller on this page is also worth measuring before committing to it.
+
 ### Pick up here
 
-**First, two small things left over from this session:**
+**First, three small things left over from this session:**
 
 1. **Look at the Elizabeth line page and say whether the layout works.** Its data path is verified
    from the serial log; the arrangement is arithmetic on paper. Same caveat as the weather page had.
+   The board is now **five columns** — time, destination, platform, status, countdown — on a 1200 px
+   body, so this is the page most likely to be cramped. The status column is the newest and is blank
+   whenever TfL did not mention that train, which is expected, not a bug.
 2. The weather details card was bumped one step up the type scale at the owner's request
    (`fontBody`/`fontTitle`). Confirm that reads well before treating it as settled.
 3. **The new Screen section on the settings page has never been opened in a browser.** The
@@ -352,6 +368,11 @@ turned out to be: the low-water mark halves.** The full measured sequence, all o
 | \+ TLS serialised device-wide (`tlsGate`) | 63 KB | 22.0 KB |
 | \+ cJSON allocating from PSRAM | 61 KB | 23.4 KB |
 | \+ `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` | 65 KB | **28.2 KB** |
+| \+ the Elizabeth line's 3rd request (per-train status) | 63 KB | **24.7 KB** |
+
+That last row is the one to watch: **adding a single extra HTTPS call to an existing page cost
+~3.5 KB of the low-water mark**, even with TLS serialised. Budget roughly that much per new upstream
+when planning a page, and re-measure rather than assuming the serialisation makes calls free.
 
 Two of those are structural and are the ones that matter:
 
@@ -667,6 +688,38 @@ Clock first (no API dependency), Claude last (experimental, must not block the o
      outbound", not "everything to Liverpool Street".
 
   The feed is also **not sorted by time**, so the parser insertion-sorts into the five-slot array.
+
+  **Per-train status (added after the first build).** `StopPoint/{id}/ArrivalDepartures` is the only
+  TfL endpoint that reports whether an individual train is delayed or cancelled, so a third request
+  per refresh enriches the board with it. It looked at first like a straight replacement for
+  `Arrivals` — smaller, and it carries scheduled *and* estimated times like a real board — and it is
+  not:
+
+  > **Every time field on it is named `...OfArrival`.** At a terminus you are originating, so there
+  > is no arrival time and those fields come back EMPTY. Measured at Abbey Wood: 8 entries, 2 usable
+  > departures, **neither with any time at all**. The same call at Liverpool Street, a through
+  > station, gave 4 usable departures with full times. Switching wholesale would have halved the
+  > morning board and stripped its clock times to gain a status column.
+
+  So the board still comes from `Arrivals`; this endpoint only answers "is any of these cancelled".
+  Consequences worth knowing before touching it:
+
+  * **Coverage is partial by design**, and thinnest at Abbey Wood. `DepartureStatus::Unknown`
+    therefore renders as a **blank**, never as "On time" — the board does not vouch for a train it
+    was not told about.
+  * **The two endpoints share no train identifier.** Matching is by destination naptan plus closest
+    countdown, within `kStatusMatchSeconds` (150 s — they sample seconds apart and round
+    differently, so exact equality never matches; core headways are ≥5 min so it cannot reach the
+    adjacent train).
+  * **`minutesAndSecondsToDeparture` is not zero-padded** — `"6:3"` is six minutes three seconds.
+  * The presence of that field is what separates a departure from an arrival, which is a more direct
+    rule than the naptan exclusion and is what the status parser uses.
+  * The enrichment call uses **one attempt, not three**, and never writes `lastError()` — a failure
+    must not mark a page degraded when everything a person reads off it is correct.
+  * **`StatusTable::kMaxHints` was 16 and the first device run filled it exactly** (Liverpool Street
+    returns ~21 entries across both directions and several branches). Entries are kept in feed
+    order, so a cap below the station's total silently drops whichever trains sort late. Now 32.
+    If a busier station is ever added, check this number against a live response first.
 * **weather** — ✅ **DONE.** Open-Meteo behind a `WeatherProvider` interface, lat/lon from settings
   (no geocoding per refresh), °C + km/h, current/high/low/rain-probability/next six hours, 20 min
   refresh, cached response restored at boot. Parser is host-*testable* but not yet host-*tested*

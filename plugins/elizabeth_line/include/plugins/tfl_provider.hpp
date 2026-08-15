@@ -64,6 +64,15 @@ class TflProvider {
     /// by the caller, because getting either wrong produces a board that looks right and is wrong.
     esp_err_t fetchBoard(Journey journey, char* buffer, size_t capacity, BoardData& out);
 
+    /// `GET /StopPoint/{origin}/ArrivalDepartures?lineIds=elizabeth`. Worker thread.
+    ///
+    /// A third request per refresh, for one reason: this is the only TfL endpoint that says whether
+    /// an individual train is delayed or cancelled. It cannot supply the board itself — see the long
+    /// note above parseDepartureStatuses(). Callers should treat a failure here as cosmetic and keep
+    /// the board they already have.
+    esp_err_t fetchDepartureStatuses(Journey journey, char* buffer, size_t capacity,
+                                     StatusTable& out);
+
     /// Short, user-facing reason for the last failure. Never contains a URL or a key.
     const char* lastError() const { return last_error_; }
 

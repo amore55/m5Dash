@@ -30,8 +30,9 @@ constexpr int kMiddayMinutes = 12 * 60;
 /// Column widths for the board. Fixed rather than flexed, because a departure board's columns
 /// lining up down the page is most of what makes it read as one.
 constexpr int32_t kTimeColumn = 150;
-constexpr int32_t kPlatformColumn = 170;
-constexpr int32_t kCountdownColumn = 190;
+constexpr int32_t kPlatformColumn = 150;
+constexpr int32_t kStatusColumn = 190;
+constexpr int32_t kCountdownColumn = 170;
 
 constexpr int32_t kBoardRowHeight = 62;
 
@@ -40,6 +41,20 @@ constexpr const char* kNoData = "--";
 /// Amber, as on the real thing. Not from the theme palette: this is the one place in the product
 /// deliberately imitating something else, and it should not drift when the theme changes.
 lv_color_t boardAmber() { return lv_color_hex(0xF5A623); }
+
+lv_color_t colourForDepartureStatus(DepartureStatus status) {
+    switch (status) {
+        case DepartureStatus::OnTime:
+            return theme::ok();
+        case DepartureStatus::Delayed:
+            return theme::stale();
+        case DepartureStatus::Cancelled:
+            return theme::error();
+        case DepartureStatus::Unknown:
+        default:
+            return theme::textMuted();
+    }
+}
 
 lv_color_t colourForLevel(ServiceLevel level) {
     switch (level) {
@@ -230,6 +245,9 @@ void ElizabethPlugin::buildBoard(lv_obj_t* parent) {
         row.platform = theme::makeLabel(row.root, "", theme::fontBody(), theme::textMuted());
         lv_obj_set_width(row.platform, kPlatformColumn);
 
+        row.status = theme::makeLabel(row.root, "", theme::fontBody(), theme::textMuted());
+        lv_obj_set_width(row.status, kStatusColumn);
+
         row.countdown = theme::makeLabel(row.root, "", theme::fontTitle(), boardAmber());
         lv_obj_set_width(row.countdown, kCountdownColumn);
         lv_obj_set_style_text_align(row.countdown, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
@@ -284,6 +302,16 @@ esp_err_t ElizabethPlugin::fetch(bool force) {
     const esp_err_t board_err =
         provider_.fetchBoard(journey, buffer.data(), buffer.capacity(), board);
     if (board_err == ESP_OK) {
+        // Enrichment, not a dependency: a failure here leaves every departure Unknown, which the
+        // board renders as a blank status column. The times, destinations and countdowns — the
+        // things actually read off the page — are unaffected, so this is never allowed to fail the
+        // refresh or reach the footer.
+        StatusTable statuses;
+        if (provider_.fetchDepartureStatuses(journey, buffer.data(), buffer.capacity(),
+                                             statuses) == ESP_OK) {
+            applyDepartureStatuses(statuses, board);
+        }
+
         std::lock_guard<std::mutex> lock(modelMutex());
         board_ = board;
         journey_ = journey;
@@ -393,6 +421,19 @@ void ElizabethPlugin::renderBoard(const BoardData& board, Journey journey) {
             std::snprintf(text, sizeof(text), "Plat %s", departure.platform.c_str());
             lv_label_set_text(row.platform, text);
         }
+
+        // Blank for Unknown — see departureStatusText(). The colour is set alongside so a status
+        // can never be shown in the wrong one after the row is reused for a different train.
+        lv_label_set_text(row.status, departureStatusText(departure.status));
+        lv_obj_set_style_text_color(row.status, colourForDepartureStatus(departure.status),
+                                    LV_PART_MAIN);
+
+        // A cancelled train's whole row is muted. It stays on the board, because "the 22:38 is
+        // cancelled" is information you need, but it should not read as one of your options.
+        const bool cancelled = (departure.status == DepartureStatus::Cancelled);
+        const lv_color_t row_colour = cancelled ? theme::textMuted() : theme::textPrimary();
+        lv_obj_set_style_text_color(row.time, row_colour, LV_PART_MAIN);
+        lv_obj_set_style_text_color(row.destination, row_colour, LV_PART_MAIN);
     }
 
     renderCountdowns();
@@ -425,6 +466,14 @@ void ElizabethPlugin::renderCountdowns() {
         if (i >= board.count) {
             continue;
         }
+        // A countdown to a cancelled train is worse than no countdown — it reads as an option.
+        if (board.departures[i].status == DepartureStatus::Cancelled) {
+            lv_label_set_text(rows_[i].countdown, kNoData);
+            lv_obj_set_style_text_color(rows_[i].countdown, theme::textMuted(), LV_PART_MAIN);
+            continue;
+        }
+        lv_obj_set_style_text_color(rows_[i].countdown, boardAmber(), LV_PART_MAIN);
+
         long long remaining = static_cast<long long>(board.departures[i].seconds_away) - elapsed;
         if (remaining < 0) {
             remaining = 0;
