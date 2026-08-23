@@ -79,6 +79,44 @@ raise the day level again, so 0 there is a soft brick, whereas 0 at night is now
 finger. Note this also changed the dim tick from 30 s to 1 s, so at night the screen now dims about
 five seconds after boot rather than half a minute.
 
+### 🔴 The UI was living in internal SRAM, and nobody had measured it
+
+**Fixed**, and it is the single biggest resource change this project has had.
+
+`CONFIG_LV_USE_CLIB_MALLOC` sends every LVGL allocation through plain `malloc()`. That reads as
+"PSRAM-backed, we have 32 MB", and it is wrong: `CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL` is **16384**,
+so any allocation *smaller* than 16 KB is served from internal SRAM first and only spills to PSRAM
+once internal is exhausted. Every LVGL allocation is far under 16 KB, so the entire UI — every
+widget of every resident page — sat in the one pool that is actually scarce on this board.
+
+Measured at boot rather than reasoned about, which is the only reason it was found:
+
+```
+PAGEMEM: internal before 149271 after 101727 => 47544 B for 6 pages
+```
+
+| | Internal SRAM for pages | Steady free | Low-water |
+|---|---|---|---|
+| Before | 47,544 B (~7.9 KB/page) | 65 KB | **26.6 KB** |
+| After  | **0 B** | 119 KB | **107.2 KB** |
+
+`components/lvgl_heap` gives LVGL an allocator that tries PSRAM **first** and falls back to
+internal — the inverse of the global policy, scoped to the one large consumer that cares about
+neither latency nor DMA. Chosen over raising `ALWAYSINTERNAL` globally, which would also push the
+Wi-Fi stack, the SDIO driver and every small driver buffer into PSRAM.
+
+Two things worth keeping:
+
+* **`WHOLE_ARCHIVE` is load-bearing, not caution.** lvgl's archive precedes ours on the link line,
+  and a static library cannot resolve symbols the linker has already walked past. Without it the
+  build fails with `undefined reference to lv_malloc_core` while the component compiles perfectly.
+* **There is a regression canary** in `app_main`: `pages built: N B of internal SRAM`. It should
+  print ~0. Anything else means the allocator stopped being linked or LVGL went back to CLIB malloc.
+
+The owner also reported the UI became noticeably snappier, which was not the goal and is worth
+noting: LVGL's draw buffers were already in PSRAM, so the win is presumably locality/fragmentation
+rather than anything about the buffers.
+
 ### 🔴 The cold-boot dark screen — panel detection needed the LCD rail, and never had it
 
 **Fixed.** Different fault from the one above, same symptom class, and it survived six weeks of
@@ -172,6 +210,19 @@ reports a count exactly equal to its cap, treat that as a truncation until prove
 a cap reached exactly is almost never a coincidence.
 
 ### Wanted on the Elizabeth line page — not started
+
+**GitHub: only one repository comes back.** With a stored token the device logs
+`1 repositories from 4961 bytes (authenticated)`. The token is being read and accepted, so this is
+either genuinely all `amore55` owns, or the token lacks the scope to see private repositories. The
+device-side check is one tap: press **All repositories**, which switches the request from
+`affiliation=owner` to `affiliation=owner,collaborator,organization_member`. If that still returns
+one, it is a token-scope question (a fine-grained token needs read on Contents and Actions, and must
+have the target repositories or organisations selected), not a firmware one.
+
+Related and unverified: `m5Dash` has **no workflow runs at all**, so every Actions column on the
+page currently reads "No actions" — which is the correct answer and means the status, drill-down and
+colour paths have never been seen with real data. They need a repository that actually runs Actions
+before anyone should believe them.
 
 **National Rail departures through Abbey Wood.** Alongside the Elizabeth line board, show the next
 few trains through Abbey Wood on the Southeastern side. **These are not in the TfL feed** — Abbey
