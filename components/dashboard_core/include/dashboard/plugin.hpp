@@ -29,6 +29,17 @@
 
 namespace dashboard {
 
+/// How a tile's headline should be coloured.
+///
+/// A tone rather than an lv_color_t so plugins state MEANING and the theme owns the hue — the
+/// alternative has six plugins each picking their own green, and a theme change that misses them.
+enum class SummaryTone : uint8_t {
+    Neutral,  ///< No judgement attached. The default, and right for a clock or a temperature.
+    Good,     ///< Working as it should.
+    Warn,     ///< Worth knowing about but not broken.
+    Bad,      ///< Wrong, and worth acting on.
+};
+
 /// What a page says about itself on the summary tile: one headline and one supporting line.
 ///
 /// Fixed capacity, because these are filled on the LVGL thread every tick and must not allocate.
@@ -39,6 +50,9 @@ struct PluginSummary {
 
     /// The qualifier: "Partly cloudy", "23/08/2026", "Next train 4 min".
     MediumString secondary;
+
+    /// Colours `primary`. Left Neutral by plugins with nothing to signal.
+    SummaryTone tone = SummaryTone::Neutral;
 };
 
 /// Lifecycle of a plugin's data. Drives the header status dot and the footer text, so the

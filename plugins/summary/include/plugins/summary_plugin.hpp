@@ -70,6 +70,7 @@ class SummaryPlugin final : public dashboard::PluginBase {
         dashboard::ShortString shown_primary;
         dashboard::MediumString shown_secondary;
         dashboard::DataState shown_state = dashboard::DataState::Idle;
+        dashboard::SummaryTone shown_tone = dashboard::SummaryTone::Neutral;
         bool shown_valid = false;
     };
 

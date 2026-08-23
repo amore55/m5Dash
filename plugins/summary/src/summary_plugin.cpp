@@ -22,6 +22,20 @@ constexpr const char* kNoData = "--";
 /// a large value and a full line of supporting text without truncation.
 constexpr size_t kTilesPerRow = 3;
 
+lv_color_t colourForTone(dashboard::SummaryTone tone) {
+    switch (tone) {
+        case dashboard::SummaryTone::Good:
+            return theme::ok();
+        case dashboard::SummaryTone::Warn:
+            return theme::stale();
+        case dashboard::SummaryTone::Bad:
+            return theme::error();
+        case dashboard::SummaryTone::Neutral:
+        default:
+            return theme::textPrimary();
+    }
+}
+
 /// Add a transparent, non-interactive filler to keep the last row's tiles the same width as the
 /// rest. Without it a final row of two would flex to half the page each, and a grid whose bottom
 /// row has wider boxes than its top row looks like a mistake rather than a layout.
@@ -198,6 +212,10 @@ void SummaryPlugin::refreshTile(Tile& tile) {
     if (first || state != tile.shown_state) {
         theme::setStatusDot(tile.dot, state);
         tile.shown_state = state;
+    }
+    if (first || summary.tone != tile.shown_tone) {
+        lv_obj_set_style_text_color(tile.primary, colourForTone(summary.tone), LV_PART_MAIN);
+        tile.shown_tone = summary.tone;
     }
     tile.shown_valid = true;
 }

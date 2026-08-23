@@ -95,6 +95,15 @@ struct Settings {
     MediumString claude_organisation_id;
     UrlString claude_relay_url;
 
+    // ---- GitHub ------------------------------------------------------------------------
+    /// Whose repositories the GitHub page shows, and which of them count as "mine" for the
+    /// filter. Not a secret — it appears in a URL. The token is in SecretStore.
+    ShortString github_username{"amore55"};
+
+    /// Show every repository the token can see, or only those owned by github_username.
+    /// Toggled from the page itself, and persisted so the choice survives a restart.
+    bool github_all_repositories = false;
+
     // ---- pages -------------------------------------------------------------------------
     ShortString default_page{"summary"};
     /// Comma-separated plugin ids. Empty means "all". Unknown ids are ignored on load, so a

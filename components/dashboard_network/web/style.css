@@ -103,3 +103,22 @@ nav a:hover { text-decoration: underline; }
   background: var(--surface); border: 1px solid var(--border);
   color: var(--muted); font-size: .75rem;
 }
+
+/* Checkbox with its text beside it, rather than the stacked label/field the rest of the form
+   uses. Used by the "remove the stored token" controls, where the label IS the question. */
+label.inline {
+  display: flex; align-items: center; gap: .5rem;
+  margin: .35rem 0 .1rem; font-weight: 400;
+}
+label.inline input[type="checkbox"] {
+  width: 1.1rem; height: 1.1rem; margin: 0; flex: none; accent-color: var(--accent);
+}
+
+/* The Screen section's controls had no rules at all, so they fell back to browser defaults and
+   sat oddly against the text inputs around them. */
+input[type="range"] { width: 100%; margin: .35rem 0; accent-color: var(--accent); }
+input[type="time"] {
+  width: 100%; padding: .55rem .6rem; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  font: inherit; box-sizing: border-box;
+}

@@ -31,6 +31,17 @@ enum class Secret : uint8_t {
     TelegramBotToken,
     ClaudeCredential,  ///< Session cookie or key. See docs/CLAUDE_USAGE.md.
     TflAppKey,         ///< Optional; TfL works unauthenticated at low rates.
+
+    /// GitHub personal access token. Strictly optional, and the GitHub page is close to useless
+    /// without it: unauthenticated the API shows only PUBLIC repos owned by the user and allows
+    /// 60 requests an hour, where one refresh of ten repos costs eleven. A token lifts that to
+    /// 5000/hr and is the only way to see private or organisation repositories at all.
+    GithubToken,
+
+    /// api-ninjas key for the clock page's quote. REQUIRED for that feature — the endpoint
+    /// answers `{"error": "Missing API Key."}` with no key, so there is no free anonymous tier
+    /// to fall back to.
+    QuoteApiKey,
 };
 
 /// Longest secret this store will accept. Telegram bot tokens are ~46 characters and a Claude

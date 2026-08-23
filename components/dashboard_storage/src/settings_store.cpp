@@ -44,6 +44,8 @@ constexpr const char* kKeyTelegramUser = "tg_user";
 constexpr const char* kKeyClaudeProvider = "claude_prov";
 constexpr const char* kKeyClaudeOrg = "claude_org";
 constexpr const char* kKeyClaudeRelay = "claude_relay";
+constexpr const char* kKeyGithubUser = "gh_user";
+constexpr const char* kKeyGithubAllRepos = "gh_all";
 constexpr const char* kKeyDefaultPage = "def_page";
 constexpr const char* kKeyPagesEnabled = "pages_en";
 constexpr const char* kKeyPagesOrder = "pages_order";
@@ -186,6 +188,9 @@ esp_err_t SettingsStore::load(Settings& out) {
     readString(handle, kKeyClaudeOrg, settings.claude_organisation_id);
     readString(handle, kKeyClaudeRelay, settings.claude_relay_url);
 
+    readString(handle, kKeyGithubUser, settings.github_username);
+    readBool(handle, kKeyGithubAllRepos, settings.github_all_repositories);
+
     readString(handle, kKeyDefaultPage, settings.default_page);
     readString(handle, kKeyPagesEnabled, settings.enabled_pages);
     readString(handle, kKeyPagesOrder, settings.page_order);
@@ -282,6 +287,11 @@ esp_err_t SettingsStore::save(const Settings& settings) {
          kKeyClaudeOrg);
     note(first, nvs_set_str(handle, kKeyClaudeRelay, settings.claude_relay_url.c_str()),
          kKeyClaudeRelay);
+
+    note(first, nvs_set_str(handle, kKeyGithubUser, settings.github_username.c_str()),
+         kKeyGithubUser);
+    note(first, nvs_set_u8(handle, kKeyGithubAllRepos, settings.github_all_repositories ? 1 : 0),
+         kKeyGithubAllRepos);
 
     note(first, nvs_set_str(handle, kKeyDefaultPage, settings.default_page.c_str()),
          kKeyDefaultPage);

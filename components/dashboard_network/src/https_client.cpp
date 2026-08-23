@@ -86,8 +86,28 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
     cfg.user_agent = userAgent();
     // The bundled root store. There is no code path that disables this.
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    cfg.disable_auto_redirect = false;
-    cfg.max_redirection_count = 3;
+
+    // A CREDENTIALLED REQUEST DOES NOT FOLLOW REDIRECTS. This is the one place that decision can
+    // be made, so it is made here rather than trusted to each caller.
+    //
+    // esp_http_client's automatic redirect re-sends the headers it was given to whatever host the
+    // Location points at. Those headers include the Authorization we set below. So a compromised,
+    // hijacked or merely misconfigured upstream could answer "302 -> https://attacker/" and be
+    // handed a live GitHub token or API key — a credential leak requiring no TLS break, because
+    // the second leg is a perfectly valid TLS connection to the attacker.
+    //
+    // Following only SAME-HOST redirects would be the general fix and needs a manual redirect
+    // loop. It is not worth building for these APIs: api.github.com and api-ninjas.com answer
+    // their documented endpoints directly, so a 3xx on a credentialled request is a sign
+    // something is wrong rather than a case to handle. It is surfaced as a failure below.
+    //
+    // Unauthenticated requests keep following redirects, because nothing is at stake and some
+    // upstreams do legitimately redirect.
+    const bool carries_credential =
+        (request.bearer != nullptr && request.bearer[0] != '\0') ||
+        (request.header_value != nullptr && request.header_value[0] != '\0');
+    cfg.disable_auto_redirect = carries_credential;
+    cfg.max_redirection_count = carries_credential ? 0 : 3;
 
     // Room for the request line and headers. esp_http_client defaults to 512 bytes, which is not
     // enough for the kind of URL these APIs use: Open-Meteo's forecast query names every variable
@@ -127,6 +147,18 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
     // still enforced below, by the read loop.
     const int64_t content_length = esp_http_client_fetch_headers(client);
     response.status = esp_http_client_get_status_code(client);
+
+    // With redirects disabled a 3xx arrives here as the final response, and its body is an
+    // error page rather than the JSON the caller asked for. Say what happened instead of
+    // handing that body upwards to fail a parse for no visible reason. The Location value is
+    // NOT logged: it is attacker-controlled in exactly the scenario this guards against.
+    if (carries_credential && response.status >= 300 && response.status < 400) {
+        ESP_LOGW(kTag, "%s: refused to follow a %d redirect on a credentialled request",
+                 safe_url, response.status);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
 
     // Refuse an oversized body before reading a single byte of it, when the server was honest
     // enough to declare the length. Chunked responses report -1 and are caught by the read loop.

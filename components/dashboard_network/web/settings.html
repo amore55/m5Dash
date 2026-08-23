@@ -108,6 +108,36 @@
         dimming off altogether.
       </p>
 
+      <h2>GitHub</h2>
+      <label for="github_username">GitHub username</label>
+      <input id="github_username" type="text" autocapitalize="off" spellcheck="false"
+             placeholder="amore55">
+
+      <label for="github_token">Personal access token</label>
+      <input id="github_token" type="password" autocomplete="off" spellcheck="false"
+             placeholder="leave blank to keep the stored token">
+      <p class="note" id="github_token_note"></p>
+      <label class="inline"><input id="github_token_clear" type="checkbox"> Remove the stored
+        token</label>
+      <p class="note">
+        Optional, but the page shows very little without one: unauthenticated the GitHub API
+        returns only public repositories and allows 60 requests an hour, where one refresh costs
+        eleven. A token also enables private and organisation repositories, and the
+        "All repositories" filter. A fine-grained token needs read access to Contents and Actions.
+      </p>
+
+      <h2>Quote of the day</h2>
+      <label for="quote_api_key">api-ninjas API key</label>
+      <input id="quote_api_key" type="password" autocomplete="off" spellcheck="false"
+             placeholder="leave blank to keep the stored key">
+      <p class="note" id="quote_key_note"></p>
+      <label class="inline"><input id="quote_key_clear" type="checkbox"> Remove the stored
+        key</label>
+      <p class="note">
+        Required for the quote under the clock — api-ninjas has no anonymous tier, so without a
+        key the quote is simply hidden. A free key comes from api-ninjas.com.
+      </p>
+
       <button type="submit" id="go">Save</button>
     </form>
     <div class="msg" id="msg"></div>
@@ -220,6 +250,17 @@
     $('dim_start').value = s.dim_start || '22:30';
     $('dim_end').value = s.dim_end || '07:00';
     syncBrightnessNotes();
+
+    $('github_username').value = s.github_username || '';
+
+    // The secret fields stay EMPTY on purpose — the device never sends a stored secret back, so
+    // there is nothing to prefill. These notes are the only feedback that one is held.
+    $('github_token_note').textContent = s.has_github_token
+      ? 'A token is stored. Type a new one to replace it.'
+      : 'No token stored — only public repositories will be listed.';
+    $('quote_key_note').textContent = s.has_quote_api_key
+      ? 'A key is stored. Type a new one to replace it.'
+      : 'No key stored — the quote will not appear.';
   }
 
   // A range input with no read-out is a guess. These show the number being chosen.
@@ -278,11 +319,29 @@
 
   // ---- save ----------------------------------------------------------------------------
 
+  /* Add the secret fields to a payload, and ONLY when they should be acted on.
+   *
+   * The device treats an absent field as "leave the stored secret alone" and a present-but-empty
+   * field as "clear it". A form always submits its inputs, so sending these unconditionally would
+   * wipe a stored token on every unrelated save — hence: typed value sends the value, ticked
+   * checkbox sends an empty string, and neither sends nothing at all. */
+  function withSecrets(fields) {
+    var token = $('github_token').value;
+    if ($('github_token_clear').checked) { fields.github_token = ''; }
+    else if (token) { fields.github_token = token; }
+
+    var key = $('quote_api_key').value;
+    if ($('quote_key_clear').checked) { fields.quote_api_key = ''; }
+    else if (key) { fields.quote_api_key = key; }
+
+    return fields;
+  }
+
   $('f').addEventListener('submit', function (e) {
     e.preventDefault();
     $('go').disabled = true;
     Dash.say('Saving…', 'ok');
-    Dash.postForm('/api/settings', {
+    Dash.postForm('/api/settings', withSecrets({
       weather_label: $('weather_label').value,
       latitude: $('latitude').value,
       longitude: $('longitude').value,
@@ -292,10 +351,17 @@
       brightness: $('brightness').value,
       night_brightness: $('night_brightness').value,
       dim_start: $('dim_start').value,
-      dim_end: $('dim_end').value
-    }).then(function () {
+      dim_end: $('dim_end').value,
+      github_username: $('github_username').value
+    })).then(function () {
       Dash.say('Saved.', 'ok');
+      // Never leave a typed secret sitting in the DOM after it has been stored.
+      $('github_token').value = '';
+      $('quote_api_key').value = '';
+      $('github_token_clear').checked = false;
+      $('quote_key_clear').checked = false;
       $('go').disabled = false;
+      load();
     }).catch(function (err) {
       Dash.say(err.needsPin ? 'The PIN was not accepted.' : err.message, 'err');
       $('go').disabled = false;

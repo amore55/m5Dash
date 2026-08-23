@@ -403,16 +403,29 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     // Sized for the escape buffers above at their worst case rather than their realistic one:
     // -Werror=format-truncation reasons about every %s being full and every %f being a 300-digit
     // double, not about a place name and a latitude.
-    char body[1792];
+    char github_user[3 * 32];
+    jsonEscape(s.github_username.c_str(), github_user, sizeof(github_user));
+
+    // PRESENCE, never content. has_* is what lets the page render "a token is stored — type a
+    // new one to replace it" without the token ever leaving the device.
+    const bool has_github_token =
+        dashboard::storage::SecretStore::has(dashboard::storage::Secret::GithubToken);
+    const bool has_quote_key =
+        dashboard::storage::SecretStore::has(dashboard::storage::Secret::QuoteApiKey);
+
+    char body[2304];
     std::snprintf(body, sizeof(body),
                   "{\"ok\":true,\"weather_label\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,"
                   "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s,"
                   "\"brightness\":%ld,\"night_brightness\":%ld,"
-                  "\"dim_start\":\"%s\",\"dim_end\":\"%s\",\"min_brightness\":%ld}",
+                  "\"dim_start\":\"%s\",\"dim_end\":\"%s\",\"min_brightness\":%ld,"
+                  "\"github_username\":\"%s\",\"has_github_token\":%s,"
+                  "\"has_quote_api_key\":%s}",
                   label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
                   static_cast<long>(s.brightness_percent),
                   static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
-                  static_cast<long>(dashboard::storage::kMinDayBrightnessPercent));
+                  static_cast<long>(dashboard::storage::kMinDayBrightnessPercent), github_user,
+                  has_github_token ? "true" : "false", has_quote_key ? "true" : "false");
     return httpd_resp_sendstr(req, body);
 }
 
@@ -458,6 +471,31 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
         formInt(body, "night_brightness", edited.night_brightness_percent);
     edited.dim_start_minutes = formHhMm(body, "dim_start", edited.dim_start_minutes);
     edited.dim_end_minutes = formHhMm(body, "dim_end", edited.dim_end_minutes);
+
+    if (findFormField(body, "github_username", text, sizeof(text)) && text[0] != '\0') {
+        edited.github_username.assign(text);
+    }
+
+    // SECRETS ARE WRITE-ONLY FROM HERE. They go straight to SecretStore and are never read back
+    // into `edited`, never returned by the GET handler and never logged — the page shows only
+    // whether one is present. An ABSENT field leaves the stored secret alone, so saving the form
+    // without retyping a token does not wipe it; an explicitly EMPTY field clears it, which is
+    // the only way to remove one without a factory reset.
+    char secret[dashboard::storage::kMaxSecretLength + 1] = {};
+    if (findFormField(body, "github_token", secret, sizeof(secret))) {
+        const esp_err_t stored =
+            dashboard::storage::SecretStore::set(dashboard::storage::Secret::GithubToken, secret);
+        ESP_LOGI(kTag, "GitHub token %s from the web page",
+                 secret[0] == '\0' ? "cleared" : (stored == ESP_OK ? "stored" : "REJECTED"));
+    }
+    secureZero(secret, sizeof(secret));
+    if (findFormField(body, "quote_api_key", secret, sizeof(secret))) {
+        const esp_err_t stored =
+            dashboard::storage::SecretStore::set(dashboard::storage::Secret::QuoteApiKey, secret);
+        ESP_LOGI(kTag, "quote API key %s from the web page",
+                 secret[0] == '\0' ? "cleared" : (stored == ESP_OK ? "stored" : "REJECTED"));
+    }
+    secureZero(secret, sizeof(secret));
 
     secureZero(body, sizeof(body));
 

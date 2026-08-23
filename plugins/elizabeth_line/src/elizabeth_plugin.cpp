@@ -584,6 +584,18 @@ void ElizabethPlugin::summarise(dashboard::PluginSummary& out) const {
 
     out.primary.assign(status.valid ? status.description.c_str() : kNoData);
 
+    // Green for a good service, red for anything wrong. Note this is BINARY where the page
+    // itself is three-way: colourForLevel() gives Minor Delays amber there, because the page has
+    // room for the reason text that makes the distinction useful. A tile has one word and is
+    // read at a glance, so "not a good service" is the only distinction it can usefully carry.
+    if (!status.valid || status.level == ServiceLevel::Unknown) {
+        out.tone = dashboard::SummaryTone::Neutral;
+    } else if (status.level == ServiceLevel::Good) {
+        out.tone = dashboard::SummaryTone::Good;
+    } else {
+        out.tone = dashboard::SummaryTone::Bad;
+    }
+
     if (board.count == 0) {
         // Distinguish "nothing running" from "not fetched yet": on the tile these look identical
         // otherwise, and one of them is worth acting on.
