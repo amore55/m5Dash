@@ -340,6 +340,33 @@ DepartureStatus statusFromText(const char* text) {
     return DepartureStatus::Unknown;
 }
 
+/// Insert a status hint, keeping the table sorted by soonest and dropping the latest on overflow.
+///
+/// The same lesson the board itself already learned: this feed is NOT ordered by time, so keeping
+/// the first N entries keeps an arbitrary N. The board shows the soonest departures, so those are
+/// the statuses that matter; a late-sorting train is the safe one to drop.
+///
+/// Keeping the first N was measured failing twice. A 16-slot table filled exactly on a 21-entry
+/// night-time response, and after raising it to 32 the daytime response filled that exactly too.
+void insertHint(StatusTable& table, const StatusHint& candidate) {
+    size_t position = 0;
+    while (position < table.count && table.hints[position].seconds_away <= candidate.seconds_away) {
+        ++position;
+    }
+    if (position >= StatusTable::kMaxHints) {
+        return;  // later than everything held, and the table is full
+    }
+    const size_t last =
+        (table.count < StatusTable::kMaxHints) ? table.count : StatusTable::kMaxHints - 1;
+    for (size_t i = last; i > position; --i) {
+        table.hints[i] = table.hints[i - 1];
+    }
+    table.hints[position] = candidate;
+    if (table.count < StatusTable::kMaxHints) {
+        ++table.count;
+    }
+}
+
 }  // namespace
 
 bool parseDepartureStatuses(const char* json_text, size_t len, StatusTable& out) {
@@ -353,7 +380,9 @@ bool parseDepartureStatuses(const char* json_text, size_t len, StatusTable& out)
     const cJSON* entries = doc.root();
     const size_t count = json::arraySize(entries);
 
-    for (size_t i = 0; i < count && out.count < StatusTable::kMaxHints; ++i) {
+    // No early exit on a full table: entries arrive unsorted, so a later one may still displace a
+    // held entry. insertHint() decides what survives.
+    for (size_t i = 0; i < count; ++i) {
         const cJSON* entry = json::at(entries, i);
         if (entry == nullptr) {
             continue;
@@ -377,11 +406,12 @@ bool parseDepartureStatuses(const char* json_text, size_t len, StatusTable& out)
             continue;  // nothing to contribute
         }
 
-        StatusHint& hint = out.hints[out.count++];
+        StatusHint hint;
         hint.seconds_away = seconds;
         hint.status = status;
         json::string(entry, "destinationNaptanId", hint.destination_naptan,
                      sizeof(hint.destination_naptan));
+        insertHint(out, hint);
     }
 
     return true;

@@ -198,9 +198,12 @@ struct StatusTable {
     /// This was 16, and the first device run filled it exactly — Liverpool Street returned 21
     /// entries covering both directions and several branches. Entries are kept in feed order, so a
     /// cap below the station's total silently drops whichever trains happen to sort late, and the
-    /// board loses their status for no visible reason. 32 clears the largest observed response with
-    /// room to spare, at ~900 bytes on the worker stack.
-    static constexpr size_t kMaxHints = 32;
+    /// board loses their status for no visible reason. Raising it to 32 was not enough either - the
+    /// DAYTIME response filled that exactly too (36 KB, where the night sample was 9 KB). The real
+    /// fix is that insertHint() now keeps the SOONEST entries rather than the first ones, so a full
+    /// table drops only trains later than the board shows. 64 is belt-and-braces on top of that, at
+    /// ~1.8 KB on the worker stack.
+    static constexpr size_t kMaxHints = 64;
     StatusHint hints[kMaxHints];
     size_t count = 0;
 };

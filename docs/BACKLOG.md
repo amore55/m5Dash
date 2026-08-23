@@ -25,7 +25,7 @@ clean and every commit was verified on hardware before it was made.
 | Time | SNTP syncs and writes back to the RX8130CE; clock shows real local time |
 | **Weather** | **Live Open-Meteo forecast for the configured location, cached across reboots** |
 | **Elizabeth line** | **Live status (worst-of), plus a 5-train board with per-train delay/cancellation, turning round at midday** |
-| Settings site | `http://deskdashboard.local` (or `http://192.168.2.182`) — weather location, timezone, clock face, PIN |
+| Settings site | `http://deskdashboard.local` (or its current DHCP address — it moved from 192.168.2.182 to 192.168.1.189 once already, so read the boot log rather than assuming) — weather location, timezone, clock face, PIN |
 | Header | Always-visible signal icon, far right |
 
 The settings site is **confirmed working from a browser** — the owner set a PIN through it and
@@ -71,6 +71,33 @@ may be 0, daytime brightness has a floor of 10 %. The asymmetry is the point —
 raise the day level again, so 0 there is a soft brick, whereas 0 at night is now recoverable with a
 finger. Note this also changed the dim tick from 30 s to 1 s, so at night the screen now dims about
 five seconds after boot rather than half a minute.
+
+### 🔴 Size response buffers from a DAYTIME sample
+
+Two bugs in one session, same root cause: **every TfL response was measured at ~22:10, when the
+timetable is at its thinnest.** Daytime is roughly double.
+
+| Endpoint | Measured 22:10 | Measured 13:53 next day |
+| --- | --- | --- |
+| Liverpool St inbound arrivals | 15.0 KB / 17 predictions | **28.3 KB / 32 predictions** |
+| Liverpool St ArrivalDepartures | 9.0 KB | **35.7 KB** |
+| Abbey Wood outbound arrivals | 4.4 KB | 14.3 KB |
+
+What that cost:
+
+1. `TflProvider::kResponseBytes` was 24 KB. The device logged
+   `response truncated at 24576 bytes`, and a truncated body is deliberately **not retried**, so
+   the departure board was **empty every afternoon** while passing every test run at night.
+   Now 48 KB.
+2. `StatusTable::kMaxHints` filled **exactly** twice — 16 on a night response, then 32 on a
+   daytime one. Raising the number was treating the symptom; the fix was to keep the **soonest**
+   entries rather than the first ones, which the board's own parser already did. A full table now
+   only drops trains later than the board shows.
+
+**Rules that follow.** Measure an API's worst case at its busiest hour, not whenever you happen to
+be working — a transport feed at 22:00 is not representative. And when a fixed-size collection
+reports a count exactly equal to its cap, treat that as a truncation until proven otherwise;
+a cap reached exactly is almost never a coincidence.
 
 ### Wanted on the Elizabeth line page — not started
 

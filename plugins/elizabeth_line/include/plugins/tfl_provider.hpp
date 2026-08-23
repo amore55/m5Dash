@@ -47,13 +47,26 @@ class TflProvider {
   public:
     /// Ceiling on a response.
     ///
-    /// Measured live: the status response is ~3.7 KB; Abbey Wood's outbound arrivals ~4.4 KB;
-    /// Liverpool Street's inbound arrivals ~15 KB (and ~31 KB unfiltered, which is why the
-    /// direction filter is not optional). 24 KB covers the worst observed case with room for a
-    /// disrupted timetable, which produces MORE predictions rather than fewer.
+    /// SIZE THIS FROM A DAYTIME SAMPLE, NOT A LATE-NIGHT ONE. This was 24 KB, taken at 22:10 when
+    /// Liverpool Street's inbound arrivals were 15 KB across 17 predictions. The device then hit the
+    /// ceiling in normal use:
+    ///
+    ///     W https: .../Arrivals/910GLIVSTLL: response truncated at 24576 bytes
+    ///
+    /// The same call at 13:53 the next day returned 28,261 bytes across 32 predictions - the evening
+    /// timetable is roughly half the size of the daytime one, so the original figure was measured
+    /// against the thinnest service of the day. A truncated body is deliberately not retried (see
+    /// worthRetrying), so the effect was a board that passed its tests and was empty every afternoon.
+    ///
+    /// Current figures: status ~3.7 KB; Abbey Wood outbound ~14 KB; Liverpool Street inbound
+    /// ~28 KB; ArrivalDepartures ~9 KB. The direction filter is still not optional - unfiltered was
+    /// already 31 KB at night. 48 KB is ~1.7x the worst daytime observation, leaving room for a
+    /// weekday peak - busier than the Sunday this was measured on - and for a disrupted timetable,
+    /// which produces MORE predictions rather than fewer. The component ceiling is
+    /// dash::cfg::kHttpMaxResponseBytes (64 KB), so there is headroom above this.
     ///
     /// This never becomes a member array — see ResponseBuffer. The caller passes storage in.
-    static constexpr size_t kResponseBytes = 24 * 1024;
+    static constexpr size_t kResponseBytes = 48 * 1024;
 
     /// `GET /Line/elizabeth/Status`. Worker thread.
     esp_err_t fetchStatus(char* buffer, size_t capacity, LineStatus& out);
