@@ -65,6 +65,10 @@ struct Settings {
     ShortString clock_style{"minimal"};  ///< "minimal" | "flap"
     bool show_seconds = false;
 
+    /// Turn the landscape image 180 degrees, for mounting the device the other way round.
+    /// Still landscape either way — this is not a portrait option.
+    bool display_flipped = false;
+
     // ---- idle lock screen --------------------------------------------------------------
     // PIN itself is stored salted+hashed in SecretStore. If lock_enabled is true but no PIN has
     // been set, the device deliberately does NOT lock — a half-finished settings change must

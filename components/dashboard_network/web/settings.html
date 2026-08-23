@@ -98,6 +98,15 @@
       <input id="night_brightness" type="range" min="0" max="100" step="5">
       <p class="note" id="night_note">12%</p>
 
+      <label for="display_flipped">Orientation</label>
+      <select id="display_flipped">
+        <option value="0">Landscape</option>
+        <option value="1">Landscape, flipped 180&deg;</option>
+      </select>
+      <p class="note">
+        For mounting the device the other way round. Applies immediately, with no restart.
+      </p>
+
       <label for="dim_start">Dim from</label>
       <input id="dim_start" type="time">
       <label for="dim_end">Dim until</label>
@@ -251,6 +260,7 @@
     $('dim_end').value = s.dim_end || '07:00';
     syncBrightnessNotes();
 
+    $('display_flipped').value = s.display_flipped ? '1' : '0';
     $('github_username').value = s.github_username || '';
 
     // The secret fields stay EMPTY on purpose — the device never sends a stored secret back, so
@@ -352,6 +362,7 @@
       night_brightness: $('night_brightness').value,
       dim_start: $('dim_start').value,
       dim_end: $('dim_end').value,
+      display_flipped: $('display_flipped').value,
       github_username: $('github_username').value
     })).then(function () {
       Dash.say('Saved.', 'ok');

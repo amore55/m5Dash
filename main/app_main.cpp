@@ -164,6 +164,10 @@ void applySettings(tab5::Board& board) {
     board.backlight().configure(g_settings.brightness_percent,
                                 g_settings.night_brightness_percent);
 
+    // Applied live. Board::init() has already set the default orientation so the boot screen is
+    // the right way up; this is where a stored preference takes over.
+    board.setDisplayFlipped(g_settings.display_flipped);
+
     g_clock.setFace(plugins::clockFaceFromString(g_settings.clock_style.c_str()));
     g_clock.setShowSeconds(g_settings.show_seconds);
 

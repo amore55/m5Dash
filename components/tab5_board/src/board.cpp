@@ -305,6 +305,26 @@ Board& Board::instance() {
     return board;
 }
 
+void Board::applyRotation() {
+    if (display_ == nullptr || !kRotateToLandscape) {
+        return;
+    }
+    // 90 and 270 are the two landscape orientations — same shape, opposite way up. The panel is
+    // physically portrait, so both are software rotations through esp_lvgl_port's sw_rotate path.
+    LvglLock lock;
+    bsp_display_rotate(display_,
+                       flipped_ ? LV_DISPLAY_ROTATION_270 : LV_DISPLAY_ROTATION_90);
+}
+
+void Board::setDisplayFlipped(bool flipped) {
+    if (display_ == nullptr || flipped_ == flipped) {
+        return;
+    }
+    flipped_ = flipped;
+    applyRotation();
+    ESP_LOGI(kTag, "display %s", flipped ? "flipped 180 degrees" : "returned to normal");
+}
+
 esp_err_t Board::init() {
     if (display_ != nullptr) {
         return ESP_OK;
@@ -395,13 +415,14 @@ esp_err_t Board::init() {
     }
 
     // ---- Orientation ------------------------------------------------------------------
-    if (kRotateToLandscape) {
-        LvglLock lock;
-        bsp_display_rotate(display_, LV_DISPLAY_ROTATION_90);
-    }
+    // Applied here with the default, and re-applied from stored settings once they load — see
+    // setDisplayFlipped(). Doing it now rather than waiting means the boot screen is the right
+    // way up, which is the one thing on screen before settings exist.
+    applyRotation();
     ESP_LOGI(kTag, "display up: panel %dx%d, UI %" PRId32 "x%" PRId32 " (%s)", BSP_LCD_H_RES,
              BSP_LCD_V_RES, width(), height(),
-             kRotateToLandscape ? "rotated 90 deg" : "native portrait");
+             kRotateToLandscape ? (flipped_ ? "landscape, flipped" : "landscape")
+                                : "native portrait");
 
     // ---- RTC. Absence is tolerated: the dashboard falls back to network time. -----------
     i2c_master_bus_handle_t bus = bsp_i2c_get_handle();

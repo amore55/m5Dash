@@ -85,10 +85,27 @@ class Board {
     esp_err_t sleepDisplay();
     esp_err_t wakeDisplay();
 
+    /// Turn the landscape image 180 degrees — still landscape, the other way up.
+    ///
+    /// For mounting the device with the USB socket and buttons on the other side. Applied live and
+    /// stored in settings, so it does not need a reflash; it takes effect on the next LVGL redraw.
+    ///
+    /// Both orientations are SOFTWARE rotations of a physically portrait panel, so neither is
+    /// cheaper than the other — the rotation buffer that costs a third of the draw memory is
+    /// already there for 90 degrees. See kDrawBufferLines.
+    void setDisplayFlipped(bool flipped);
+    bool displayFlipped() const { return flipped_; }
+
   private:
     Board() = default;
 
+    /// Push `flipped_` to the display. Safe before settings exist; called again once they load.
+    void applyRotation();
+
     lv_display_t* display_ = nullptr;
+
+    /// Landscape, the other way up. Default false = the original orientation.
+    bool flipped_ = false;
     Backlight backlight_;
     Rx8130 rtc_;
     bool wifi_rail_on_ = false;

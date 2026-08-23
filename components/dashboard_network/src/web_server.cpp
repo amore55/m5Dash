@@ -419,12 +419,14 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s,"
                   "\"brightness\":%ld,\"night_brightness\":%ld,"
                   "\"dim_start\":\"%s\",\"dim_end\":\"%s\",\"min_brightness\":%ld,"
+                  "\"display_flipped\":%s,"
                   "\"github_username\":\"%s\",\"has_github_token\":%s,"
                   "\"has_quote_api_key\":%s}",
                   label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
                   static_cast<long>(s.brightness_percent),
                   static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
-                  static_cast<long>(dashboard::storage::kMinDayBrightnessPercent), github_user,
+                  static_cast<long>(dashboard::storage::kMinDayBrightnessPercent),
+                  s.display_flipped ? "true" : "false", github_user,
                   has_github_token ? "true" : "false", has_quote_key ? "true" : "false");
     return httpd_resp_sendstr(req, body);
 }
@@ -471,6 +473,10 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
         formInt(body, "night_brightness", edited.night_brightness_percent);
     edited.dim_start_minutes = formHhMm(body, "dim_start", edited.dim_start_minutes);
     edited.dim_end_minutes = formHhMm(body, "dim_end", edited.dim_end_minutes);
+
+    if (findFormField(body, "display_flipped", text, sizeof(text)) && text[0] != '\0') {
+        edited.display_flipped = (text[0] == '1' || text[0] == 't');
+    }
 
     if (findFormField(body, "github_username", text, sizeof(text)) && text[0] != '\0') {
         edited.github_username.assign(text);
