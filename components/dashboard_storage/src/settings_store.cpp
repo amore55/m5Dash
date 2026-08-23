@@ -48,6 +48,7 @@ constexpr const char* kKeyDisplayFlipped = "disp_flip";
 constexpr const char* kKeyGithubUser = "gh_user";
 constexpr const char* kKeyGithubShowWork = "gh_work";
 constexpr const char* kKeyGithubOrg = "gh_org";
+constexpr const char* kKeyGithubAliases = "gh_alias";
 constexpr const char* kKeyDefaultPage = "def_page";
 constexpr const char* kKeyPagesEnabled = "pages_en";
 constexpr const char* kKeyPagesOrder = "pages_order";
@@ -194,6 +195,7 @@ esp_err_t SettingsStore::load(Settings& out) {
     readString(handle, kKeyGithubUser, settings.github_username);
     readBool(handle, kKeyGithubShowWork, settings.github_show_work);
     readString(handle, kKeyGithubOrg, settings.github_organisation);
+    readString(handle, kKeyGithubAliases, settings.github_aliases);
 
     readString(handle, kKeyDefaultPage, settings.default_page);
     readString(handle, kKeyPagesEnabled, settings.enabled_pages);
@@ -300,6 +302,8 @@ esp_err_t SettingsStore::save(const Settings& settings) {
          kKeyGithubShowWork);
     note(first, nvs_set_str(handle, kKeyGithubOrg, settings.github_organisation.c_str()),
          kKeyGithubOrg);
+    note(first, nvs_set_str(handle, kKeyGithubAliases, settings.github_aliases.c_str()),
+         kKeyGithubAliases);
 
     note(first, nvs_set_str(handle, kKeyDefaultPage, settings.default_page.c_str()),
          kKeyDefaultPage);

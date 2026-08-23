@@ -176,6 +176,20 @@ struct RunList {
 /// when count is 0 — see note 3: a repository with no workflows is a real answer.
 bool parseRuns(const char* json, size_t len, RunList& out);
 
+/// Turn a GitHub login into the name you would actually call the person.
+///
+/// `aliases` is a comma-separated list of `login=Name` pairs, e.g.
+///
+///     colgateteeth200=Yusuf,morfry=Morgan,amore55=Moreno
+///
+/// Writes the matching name into `out`, or the login unchanged when there is no entry for it —
+/// never blank, because an unmapped colleague should still be identifiable.
+///
+/// Matching is case-insensitive, GitHub logins being case-insensitive, and surrounding spaces are
+/// ignored so the list can be written readably. A malformed entry is skipped rather than failing
+/// the whole list: one typo should not un-name everybody.
+void displayNameFor(const char* aliases, const char* login, char* out, size_t capacity);
+
 /// "3 min ago", "4 h ago", "2 days ago", "just now". Empty for an unknown time.
 ///
 /// Lives here rather than in the plugin because it is pure formatting over a duration and is the

@@ -120,6 +120,12 @@ struct Settings {
     /// enumerate the user's organisations and may therefore come back empty.
     ShortString github_organisation;
 
+    /// Friendly names for GitHub logins, as `login=Name` pairs separated by commas.
+    ///
+    /// A setting rather than a table in the firmware, so a new colleague is a text edit rather
+    /// than a reflash. An unlisted login is shown as itself, never blank.
+    FixedString<192> github_aliases{"colgateteeth200=Yusuf,morfry=Morgan,amore55=Moreno"};
+
     // ---- pages -------------------------------------------------------------------------
     ShortString default_page{"summary"};
     /// Comma-separated plugin ids. Empty means "all". Unknown ids are ignored on load, so a

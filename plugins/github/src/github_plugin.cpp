@@ -113,6 +113,20 @@ void GithubPlugin::setAccount(const char* username, const char* organisation, bo
     }
 }
 
+void GithubPlugin::setAliases(const char* aliases) {
+    if (aliases == nullptr) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(modelMutex());
+    if (aliases_.equals(aliases)) {
+        return;
+    }
+    aliases_.assign(aliases);
+    // No refetch: the logins already held are unchanged and only their rendering differs, so a
+    // redraw is enough. Refetching seven repositories to relabel a column would be absurd.
+    markDirty();
+}
+
 esp_err_t GithubPlugin::onInitialise() {
     if (!GithubProvider::authenticated(RepoScope::Mine)) {
         ESP_LOGW(kTag, "no personal token: public repositories only, 60 requests/hour");
@@ -519,6 +533,9 @@ void GithubPlugin::updateUi() {
         std::lock_guard<std::mutex> lock(modelMutex());
         repos = activeList();
         runs = detail_runs_;
+        // Copied under the same lock as the data it labels, so a settings change mid-render
+        // cannot leave half the rows using the old list.
+        rendered_aliases_ = aliases_;
     }
 
     const std::time_t now = timeutil::systemTimeValid() ? timeutil::nowUtc() : 0;
@@ -579,7 +596,14 @@ void GithubPlugin::renderList(const RepoList& repos, std::time_t now_utc) {
             lv_label_set_text(row.workflow, repo.run_workflow.c_str());
             // Blank rather than a dash for a repository with no runs: there is genuinely nobody
             // to attribute, and a dash in a "who" column invites the reader to wonder who.
-            lv_label_set_text(row.actor, repo.run_actor.c_str());
+            if (repo.run_actor.empty()) {
+                lv_label_set_text(row.actor, "");
+            } else {
+                char who[64];
+                displayNameFor(rendered_aliases_.c_str(), repo.run_actor.c_str(), who,
+                               sizeof(who));
+                lv_label_set_text(row.actor, who);
+            }
         }
 
         // The age shown is the last PUSH, not the last run: that is what "last worked on" means,
@@ -624,7 +648,13 @@ void GithubPlugin::renderDetail(const RunList& runs, std::time_t now_utc) {
         lv_label_set_text(row.title,
                           run.title.empty() ? run.workflow.c_str() : run.title.c_str());
 
-        lv_label_set_text(row.actor, run.actor.c_str());
+        if (run.actor.empty()) {
+            lv_label_set_text(row.actor, "");
+        } else {
+            char who[64];
+            displayNameFor(rendered_aliases_.c_str(), run.actor.c_str(), who, sizeof(who));
+            lv_label_set_text(row.actor, who);
+        }
 
         lv_label_set_text(row.status, runStateText(run.state));
         lv_obj_set_style_text_color(row.status, colourForRunState(run.state), LV_PART_MAIN);
@@ -637,11 +667,15 @@ void GithubPlugin::renderDetail(const RunList& runs, std::time_t now_utc) {
 
 void GithubPlugin::summarise(dashboard::PluginSummary& out) const {
     RepoList repos;
+    dashboard::FixedString<192> aliases;
     {
         std::lock_guard<std::mutex> lock(modelMutex());
         // The tile follows the page's own filter, so the two never disagree about which set of
         // repositories "GitHub" currently means.
         repos = activeList();
+        // Read from aliases_, not rendered_aliases_: summarise() is called by the SUMMARY page's
+        // tick and must not depend on this page's updateUi() having run recently.
+        aliases = aliases_;
     }
 
     if (!repos.valid || repos.count == 0) {
@@ -681,14 +715,18 @@ void GithubPlugin::summarise(dashboard::PluginSummary& out) const {
     }
 
     out.primary.assign(runStateText(chosen->run_state));
-    char line[96];
+    // Sized for the worst case the compiler can see: a 32-character repository name, a bullet and
+    // a 64-character display name. It is written into a MediumString (64) afterwards, so the tile
+    // truncates there rather than here — but -Werror=format-truncation reasons about this buffer.
+    char line[128];
     if (chosen->run_actor.empty()) {
         std::snprintf(line, sizeof(line), "%s", chosen->name.c_str());
     } else {
+        char who[64];
+        displayNameFor(aliases.c_str(), chosen->run_actor.c_str(), who, sizeof(who));
         // Bullet, not an em dash: 0x2022 is in the glyph range and the dash is not — it would
         // draw as an empty box. Same reason as the weather tile.
-        std::snprintf(line, sizeof(line), "%s \xE2\x80\xA2 %s", chosen->name.c_str(),
-                      chosen->run_actor.c_str());
+        std::snprintf(line, sizeof(line), "%s \xE2\x80\xA2 %s", chosen->name.c_str(), who);
     }
     out.secondary.assign(line);
 

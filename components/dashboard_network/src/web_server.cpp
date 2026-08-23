@@ -21,9 +21,14 @@ constexpr const char* kTag = "web";
 /// HTTP task's stack.
 constexpr size_t kPortalScanResults = 20;
 
-/// Largest form body accepted. The biggest realistic one is the settings form, which is a few
-/// short fields; 1 kB leaves room without letting a client send us anything interesting.
-constexpr size_t kMaxFormBytes = 1024;
+/// Largest form body accepted.
+///
+/// Raised from 1 kB as the settings form grew: it now carries two GitHub tokens (~93 characters
+/// each), an alias list and an organisation alongside everything else, and readForm() REJECTS a
+/// body at the limit rather than truncating -- which would surface as "Malformed request." and
+/// look like a bug in the page. Still small enough that a client cannot send anything
+/// interesting.
+constexpr size_t kMaxFormBytes = 2048;
 
 /// 63 characters plus the terminator, per WPA2.
 constexpr size_t kMaxPassphrase = 64;
@@ -405,8 +410,10 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     // double, not about a place name and a latitude.
     char github_user[3 * 32];
     char github_org[3 * 32];
+    char github_aliases[3 * 192];
     jsonEscape(s.github_username.c_str(), github_user, sizeof(github_user));
     jsonEscape(s.github_organisation.c_str(), github_org, sizeof(github_org));
+    jsonEscape(s.github_aliases.c_str(), github_aliases, sizeof(github_aliases));
 
     // PRESENCE, never content. has_* is what lets the page render "a token is stored — type a
     // new one to replace it" without the token ever leaving the device.
@@ -417,7 +424,9 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     const bool has_quote_key =
         dashboard::storage::SecretStore::has(dashboard::storage::Secret::QuoteApiKey);
 
-    char body[2304];
+    // Sized for the escape buffers above at their worst case: jsonEscape can treble a string,
+    // and github_aliases alone is 192 characters in, 576 out.
+    char body[3328];
     std::snprintf(body, sizeof(body),
                   "{\"ok\":true,\"weather_label\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,"
                   "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s,"
@@ -425,6 +434,7 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   "\"dim_start\":\"%s\",\"dim_end\":\"%s\",\"min_brightness\":%ld,"
                   "\"display_flipped\":%s,"
                   "\"github_username\":\"%s\",\"github_organisation\":\"%s\","
+                  "\"github_aliases\":\"%s\","
                   "\"has_github_token\":%s,\"has_github_work_token\":%s,"
                   "\"has_quote_api_key\":%s}",
                   label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
@@ -432,6 +442,7 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
                   static_cast<long>(dashboard::storage::kMinDayBrightnessPercent),
                   s.display_flipped ? "true" : "false", github_user, github_org,
+                  github_aliases,
                   has_github_token ? "true" : "false",
                   has_github_work_token ? "true" : "false",
                   has_quote_key ? "true" : "false");
@@ -459,7 +470,9 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
     dashboard::storage::Settings edited;
     self->callbacks_.read_settings(edited);
 
-    char text[192];
+    // Must hold the largest text field, which is now github_aliases at 192 characters. Sized
+    // above it so a full-length list is not clipped by one byte.
+    char text[256];
     if (findFormField(body, "weather_label", text, sizeof(text)) && text[0] != '\0') {
         edited.weather_label.assign(text);
     }
@@ -498,6 +511,9 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
     // choice that selects the affiliation-based fallback.
     if (findFormField(body, "github_organisation", text, sizeof(text))) {
         edited.github_organisation.assign(text);
+    }
+    if (findFormField(body, "github_aliases", text, sizeof(text))) {
+        edited.github_aliases.assign(text);
     }
 
     // SECRETS ARE WRITE-ONLY FROM HERE. They go straight to SecretStore and are never read back

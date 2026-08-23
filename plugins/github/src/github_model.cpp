@@ -14,6 +14,23 @@ namespace {
 namespace json = dashboard::json;
 namespace timeutil = dashboard::timeutil;
 
+/// Case-insensitive comparison of `len` bytes of `a` against the whole of NUL-terminated `b`.
+///
+/// Used by the alias list, where the key is a slice of a longer string and cannot be treated as
+/// NUL-terminated without copying it out first.
+bool sameLogin(const char* a, const char* b, size_t len) {
+    if (a == nullptr || b == nullptr) {
+        return false;
+    }
+    for (size_t i = 0; i < len; ++i) {
+        if (b[i] == '\0' || std::tolower(static_cast<unsigned char>(a[i])) !=
+                                std::tolower(static_cast<unsigned char>(b[i]))) {
+            return false;
+        }
+    }
+    return b[len] == '\0';
+}
+
 /// Case-insensitive equality for GitHub logins, which are case-insensitive.
 bool sameLogin(const char* a, const char* b) {
     if (a == nullptr || b == nullptr) {
@@ -300,6 +317,63 @@ bool parseRuns(const char* json_text, size_t len, RunList& out) {
     // Valid even with zero runs: "this repository has no workflows" is an answer, not a failure.
     out.valid = true;
     return true;
+}
+
+void displayNameFor(const char* aliases, const char* login, char* out, size_t capacity) {
+    if (out == nullptr || capacity == 0) {
+        return;
+    }
+    // The login is the answer unless something better is found, so write it first and let a
+    // match overwrite it. That also makes every early return below correct by construction.
+    copyBounded(login, out, capacity);
+
+    if (aliases == nullptr || login == nullptr || login[0] == '\0') {
+        return;
+    }
+
+    const char* cursor = aliases;
+    while (*cursor != '\0') {
+        // One entry: up to the next comma.
+        const char* entry_end = std::strchr(cursor, ',');
+        const char* stop = (entry_end != nullptr) ? entry_end : cursor + std::strlen(cursor);
+
+        const char* equals = nullptr;
+        for (const char* p = cursor; p < stop; ++p) {
+            if (*p == '=') {
+                equals = p;
+                break;
+            }
+        }
+
+        if (equals != nullptr) {
+            // Trim spaces around the key and the value, so "a = B, c=D" behaves as written.
+            const char* key = cursor;
+            const char* key_end = equals;
+            while (key < key_end && *key == ' ') ++key;
+            while (key_end > key && key_end[-1] == ' ') --key_end;
+
+            const char* value = equals + 1;
+            const char* value_end = stop;
+            while (value < value_end && *value == ' ') ++value;
+            while (value_end > value && value_end[-1] == ' ') --value_end;
+
+            // sameLogin() already requires `login` to end exactly where the key does, so there is
+            // no separate length check to get wrong.
+            const size_t key_len = static_cast<size_t>(key_end - key);
+            if (sameLogin(key, login, key_len) && value_end > value) {
+                const size_t value_len = static_cast<size_t>(value_end - value);
+                const size_t copy = (value_len < capacity - 1) ? value_len : capacity - 1;
+                std::memcpy(out, value, copy);
+                out[copy] = '\0';
+                return;
+            }
+        }
+
+        if (entry_end == nullptr) {
+            break;
+        }
+        cursor = entry_end + 1;
+    }
 }
 
 void formatRelativeAge(char* out, size_t capacity, std::time_t then_utc, std::time_t now_utc) {

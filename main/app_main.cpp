@@ -185,6 +185,7 @@ void applySettings(tab5::Board& board) {
 
     g_github.setAccount(g_settings.github_username.c_str(),
                         g_settings.github_organisation.c_str(), g_settings.github_show_work);
+    g_github.setAliases(g_settings.github_aliases.c_str());
 }
 
 /// Last value seen from the gesture detector, so a touch is acted on once per press-poll.

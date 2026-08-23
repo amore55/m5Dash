@@ -40,6 +40,12 @@ class GithubPlugin final : public dashboard::PluginBase {
     /// Applied live from Settings; a change refetches.
     void setAccount(const char* username, const char* organisation, bool show_work);
 
+    /// Friendly names for GitHub logins, as `login=Name` pairs. Applied live from Settings.
+    ///
+    /// Purely a rendering concern: the model keeps the raw login, so logs and any future
+    /// matching stay in GitHub identities and only the screen shows the nickname.
+    void setAliases(const char* aliases);
+
     /// True when the WORK list is showing rather than the user's own.
     bool showingWork() const { return show_work_.load(std::memory_order_relaxed); }
 
@@ -121,6 +127,11 @@ class GithubPlugin final : public dashboard::PluginBase {
 
     dashboard::ShortString username_{"amore55"};
     dashboard::ShortString organisation_;
+    dashboard::FixedString<192> aliases_;
+
+    /// Snapshot of aliases_ taken under the lock at the start of updateUi(), so the two render
+    /// helpers -- which run on the LVGL thread without the lock -- share one consistent list.
+    dashboard::FixedString<192> rendered_aliases_;
     std::atomic<bool> show_work_{false};
 
     /// Set by the application; see setFilterPersister(). LVGL thread only.
