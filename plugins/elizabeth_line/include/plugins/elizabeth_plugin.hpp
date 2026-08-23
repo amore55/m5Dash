@@ -8,11 +8,18 @@
 //   2. When is the next train? A departure board in the style of the real thing: expected time,
 //      destination, platform, and how many minutes away.
 //
-// THE BOARD TURNS ROUND AT MIDDAY. Before noon it shows Abbey Wood to Liverpool Street, the way in;
-// after noon, Liverpool Street to Abbey Wood, the way home. That is the whole rule — it is not tied
-// to the commute windows in Settings, which control how OFTEN the page refreshes. Tying it to those
+// THE BOARD TURNS ROUND AT 13:30. Before then it shows Abbey Wood to Liverpool Street, the way in;
+// after, Liverpool Street to Abbey Wood, the way home. That is the whole rule — it is not tied to
+// the commute windows in Settings, which control how OFTEN the page refreshes. Tying it to those
 // would leave the board showing nothing useful at 06:30 or 21:00, when the answer to "which way am
 // I going" is still perfectly obvious.
+//
+// EITHER BOARD CAN BE ASKED FOR BY HAND, with the two station buttons beside the status box. A
+// manual choice holds until the schedule next changes its own mind — that is, until 13:30 or
+// midnight passes — and then the automatic rule takes over again. The alternative designs are both
+// worse: an override that never expires means one afternoon tap silently shows the wrong way home
+// for the rest of the week, and one that expires on a timer takes the board away from you while you
+// are still looking at it.
 //
 // The countdown re-renders every tick from the fetched seconds, so "4 min" becomes "3 min" without
 // waiting for the next refresh — which is what makes it read like a board rather than a snapshot.
@@ -51,9 +58,22 @@ class ElizabethPlugin final : public dashboard::PluginBase {
     /// in PSRAM (see ResponseBuffer), so this only has to cover cJSON's own recursion.
     uint32_t workerStackBytes() const override { return 8192; }
 
+    /// Headline is the line status; the supporting line is how long until the next train off
+    /// whichever board is currently showing.
+    void summarise(dashboard::PluginSummary& out) const override;
+
   private:
     void buildStatusCard(lv_obj_t* parent);
     void buildBoard(lv_obj_t* parent);
+
+    /// The two station buttons, laid out in line with the status box.
+    void buildStationButtons(lv_obj_t* parent);
+
+    /// A station button was pressed. Sets the manual override and refetches.
+    void selectJourney(Journey journey);
+
+    /// Paint the selected state onto the two buttons. Cheap; safe to call whenever.
+    void updateStationButtons(Journey showing);
 
     void renderStatus(const LineStatus& status);
     void renderBoard(const BoardData& board, Journey journey);
@@ -62,8 +82,12 @@ class ElizabethPlugin final : public dashboard::PluginBase {
 
     void loadCachedStatus();
 
-    /// Which way round the board should be, right now. Reads the clock.
-    static Journey journeyForNow();
+    /// Which way round the CLOCK says the board should be. Ignores any manual override.
+    static Journey scheduledJourney();
+
+    /// Which way round the board should actually be: the manual choice if one is standing,
+    /// otherwise the scheduled one.
+    Journey journeyForNow() const;
 
     /// True when the local time is inside either configured commute window.
     bool inCommuteWindow() const;
@@ -93,6 +117,17 @@ class ElizabethPlugin final : public dashboard::PluginBase {
     Journey requested_journey_ = Journey::ToLiverpoolStreet;
     bool requested_journey_valid_ = false;
 
+    /// A board asked for by hand, overriding the clock until the schedule next changes.
+    /// LVGL thread only — set by a button press, cleared by onTick().
+    Journey manual_journey_ = Journey::ToLiverpoolStreet;
+    bool manual_journey_valid_ = false;
+
+    /// What scheduledJourney() said on the previous tick, so a CHANGE in it can be detected and
+    /// used to retire the manual override. Without this the override could only be cleared on a
+    /// timer or never, and both alternatives are worse — see the note at the top of this file.
+    Journey last_scheduled_ = Journey::ToLiverpoolStreet;
+    bool last_scheduled_valid_ = false;
+
     // ---- widgets ------------------------------------------------------------------------
     lv_obj_t* status_headline_ = nullptr;
     lv_obj_t* status_dot_ = nullptr;
@@ -100,6 +135,16 @@ class ElizabethPlugin final : public dashboard::PluginBase {
 
     lv_obj_t* board_title_ = nullptr;
     lv_obj_t* board_empty_ = nullptr;
+
+    /// Labelled by the station you are standing at, because that is what you choose between when
+    /// you look at a board. "Liv St" shows departures FROM Liverpool Street.
+    lv_obj_t* liverpool_button_ = nullptr;
+    lv_obj_t* abbey_button_ = nullptr;
+
+    /// What the buttons are currently painted as, so a 250 ms tick does not restyle them
+    /// — and dirty them for redraw — when nothing has changed.
+    Journey buttons_showing_ = Journey::ToLiverpoolStreet;
+    bool buttons_showing_valid_ = false;
 
     struct BoardRow {
         lv_obj_t* root = nullptr;

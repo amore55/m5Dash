@@ -60,6 +60,39 @@ esp_err_t PageManager::begin(lv_display_t* display) {
     lv_obj_set_style_pad_column(indicator_, theme::kGapS, LV_PART_MAIN);
     lv_obj_align(indicator_, LV_ALIGN_BOTTOM_MID, 0, kIndicatorBottomOffset);
 
+    // Home button, also on the top layer and for the same reason as the indicator: PageManager
+    // holds only a DashboardPlugin* and cannot reach a plugin's footer, so one shared widget is
+    // both possible and less to keep in sync than one per page.
+    //
+    // Unlike the indicator this one IS clickable, which is safe: GestureDetector polls the input
+    // device directly rather than relying on hit-testing, and calls lv_indev_reset() when it
+    // recognises a swipe — so a swipe beginning on this button navigates instead of pressing it.
+    home_button_ = lv_button_create(top);
+    lv_obj_remove_style_all(home_button_);
+    lv_obj_set_size(home_button_, theme::kTouchTarget, theme::kTouchTarget);
+    lv_obj_set_style_radius(home_button_, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(home_button_, theme::surface(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(home_button_, LV_OPA_70, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(home_button_, theme::accent(), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_opa(home_button_, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_align(home_button_, LV_ALIGN_BOTTOM_RIGHT, -theme::kGapL, kIndicatorBottomOffset);
+
+    lv_obj_t* home_glyph = lv_label_create(home_button_);
+    lv_label_set_text(home_glyph, LV_SYMBOL_HOME);
+    lv_obj_set_style_text_color(home_glyph, theme::textSecondary(), LV_PART_MAIN);
+    lv_obj_center(home_glyph);
+
+    lv_obj_add_event_cb(
+        home_button_,
+        [](lv_event_t* event) {
+            static_cast<PageManager*>(lv_event_get_user_data(event))->goHome();
+        },
+        LV_EVENT_CLICKED, this);
+
+    // Hidden until a home page id is set, so a build that never calls setHomePageId() shows no
+    // button rather than one that does nothing.
+    lv_obj_add_flag(home_button_, LV_OBJ_FLAG_HIDDEN);
+
     esp_err_t err = gestures_.start([this](Gesture gesture) { onGesture(gesture); });
     if (err != ESP_OK) {
         // Navigation is dead but the dashboard still displays. Deliberately not fatal — a
@@ -231,6 +264,47 @@ void PageManager::rebuildIndicators() {
     }
 }
 
+void PageManager::setHomePageId(const char* id) {
+    home_page_id_ = id;
+    updateHomeButton();
+}
+
+void PageManager::goHome() {
+    if (home_page_id_ == nullptr) {
+        return;
+    }
+    // Close Settings on the way, or the overlay would stay on top of the page we just navigated
+    // to and the button would look broken.
+    if (overlayOpen()) {
+        closeOverlay();
+    }
+    showById(home_page_id_);
+}
+
+void PageManager::updateHomeButton() {
+    if (home_button_ == nullptr) {
+        return;
+    }
+
+    bool show = home_page_id_ != nullptr;
+    if (show) {
+        // Hidden on the home page itself, and while Settings is up — Settings is dismissed by
+        // long press and putting a second way out on top of it only invites confusion about
+        // which one saves.
+        const DashboardPlugin* current = currentPlugin();
+        if (overlayOpen() ||
+            (current != nullptr && std::strcmp(current->id(), home_page_id_) == 0)) {
+            show = false;
+        }
+    }
+
+    if (show) {
+        lv_obj_remove_flag(home_button_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(home_button_, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 void PageManager::showEntry(int index, bool animate) {
     if (index < 0 || static_cast<size_t>(index) >= entry_count_) {
         return;
@@ -260,6 +334,7 @@ void PageManager::showEntry(int index, bool animate) {
     entry.plugin->onShow();
 
     rebuildIndicators();
+    updateHomeButton();
 }
 
 // ---------------------------------------------------------------------------------------
@@ -315,6 +390,7 @@ void PageManager::openOverlay(const char* id) {
     gestures_.setLongPressEnabled(false);
     showEntry(index, /*animate=*/true);
     rebuildIndicators();
+    updateHomeButton();
     ESP_LOGI(kTag, "overlay '%s' opened", entries_[index].plugin->id());
 }
 
@@ -330,6 +406,7 @@ void PageManager::closeOverlay() {
         showEntry(static_cast<int>(rotation_[rotation_position_]), /*animate=*/true);
     }
     rebuildIndicators();
+    updateHomeButton();
 }
 
 void PageManager::requestRefresh() {

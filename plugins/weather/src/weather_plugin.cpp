@@ -319,6 +319,36 @@ esp_err_t WeatherPlugin::fetch(bool force) {
 // Rendering
 // ---------------------------------------------------------------------------------------
 
+void WeatherPlugin::summarise(dashboard::PluginSummary& out) const {
+    WeatherData data;
+    dashboard::MediumString label;
+    {
+        std::lock_guard<std::mutex> lock(modelMutex());
+        data = data_;
+        label = label_;
+    }
+
+    if (!data.valid) {
+        out.primary.assign(kNoData);
+        out.secondary.assign(label.c_str());
+        return;
+    }
+
+    char text[64];
+    // Degree sign only — no trailing C. The tile is narrow and the unit never changes, so the
+    // letter is the first thing worth losing. 0xB0 is in the glyph range; anything outside it
+    // renders as an empty box.
+    std::snprintf(text, sizeof(text), "%d°", wholeDegrees(data.temperature_c));
+    out.primary.assign(text);
+
+    // Prefer TfL-style specific wording over the coarse Sky bucket: wmoDescription() knows
+    // "Partly cloudy" where skyDescription() would only say "Cloudy".
+    const char* words = (data.wmo_code != kNoValue) ? wmoDescription(data.wmo_code)
+                                                    : skyDescription(data.sky);
+    std::snprintf(text, sizeof(text), "%s • %s", words, label.c_str());
+    out.secondary.assign(text);
+}
+
 void WeatherPlugin::updateUi() {
     // Snapshot, then render outside the lock. WeatherData is a few hundred bytes of plain data, so
     // the copy is cheaper than holding the model mutex across a few dozen LVGL calls — and it means

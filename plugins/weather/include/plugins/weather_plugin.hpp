@@ -40,6 +40,9 @@ class WeatherPlugin final : public dashboard::PluginBase {
     /// than a moment of dashes. A changed label alone just relabels.
     void setLocation(double latitude, double longitude, const char* label);
 
+    /// Current temperature, with the sky in words under it.
+    void summarise(dashboard::PluginSummary& out) const override;
+
   protected:
     esp_err_t onInitialise() override;
     void buildBody(lv_obj_t* body) override;

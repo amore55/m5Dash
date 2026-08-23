@@ -231,6 +231,23 @@ esp_err_t ClockPlugin::fetch(bool force) {
     return ESP_OK;
 }
 
+void ClockPlugin::summarise(dashboard::PluginSummary& out) const {
+    if (!timeutil::systemTimeValid()) {
+        // Never show 01/01/1970 on the hub: an obviously wrong date is worse than an admitted
+        // unknown, because it looks like the device is working.
+        out.primary.assign("--:--");
+        out.secondary.assign("Waiting for time sync");
+        return;
+    }
+
+    const std::tm now = timeutil::localNow();
+    char text[32];
+    timeutil::formatTime24h(text, sizeof(text), now, /*with_seconds=*/false);
+    out.primary.assign(text);
+    timeutil::formatBritishDateShort(text, sizeof(text), now);
+    out.secondary.assign(text);
+}
+
 void ClockPlugin::updateUi() {
     const bool known = timeutil::systemTimeValid();
     const std::tm now = timeutil::localNow();

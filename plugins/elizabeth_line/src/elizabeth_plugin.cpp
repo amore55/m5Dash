@@ -24,8 +24,9 @@ constexpr const char* kTag = "elizabeth";
 /// Cache key. Only the STATUS is cached, deliberately — see loadCachedStatus().
 constexpr const char* kStatusCacheKey = "tflstatus";
 
-/// Local minute at which the board turns round. 12:00.
-constexpr int kMiddayMinutes = 12 * 60;
+/// Local minute at which the board turns round automatically. 13:30, not noon: the journey home
+/// is not worth showing at 12:05, and the morning board stays useful through a late lunch.
+constexpr int kTurnRoundMinutes = 13 * 60 + 30;
 
 /// Column widths for the board. Fixed rather than flexed, because a departure board's columns
 /// lining up down the page is most of what makes it read as one.
@@ -113,14 +114,18 @@ uint32_t ElizabethPlugin::refreshIntervalMs() const {
     return inCommuteWindow() ? dash::cfg::kTflCommuteRefreshMs : dash::cfg::kTflIdleRefreshMs;
 }
 
-Journey ElizabethPlugin::journeyForNow() {
+Journey ElizabethPlugin::scheduledJourney() {
     const int minutes = timeutil::localMinutesSinceMidnight();
     if (minutes < 0) {
         // Clock unknown. Pick the morning board: a device that has just booted is more likely to
         // be starting a day than ending one, and the next tick after time sync corrects it anyway.
         return Journey::ToLiverpoolStreet;
     }
-    return (minutes < kMiddayMinutes) ? Journey::ToLiverpoolStreet : Journey::ToAbbeyWood;
+    return (minutes < kTurnRoundMinutes) ? Journey::ToLiverpoolStreet : Journey::ToAbbeyWood;
+}
+
+Journey ElizabethPlugin::journeyForNow() const {
+    return manual_journey_valid_ ? manual_journey_ : scheduledJourney();
 }
 
 void ElizabethPlugin::setCommuteWindows(int32_t morning_start, int32_t morning_end,
@@ -180,13 +185,25 @@ void ElizabethPlugin::loadCachedStatus() {
 // ---------------------------------------------------------------------------------------
 
 void ElizabethPlugin::buildBody(lv_obj_t* body) {
-    buildStatusCard(body);
+    // Status and controls share one row across the top: the status box no longer spans the page,
+    // which buys back the vertical space the buttons need without shortening the board.
+    lv_obj_t* top = theme::makeRow(body);
+    lv_obj_set_height(top, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_column(top, theme::kGapM, LV_PART_MAIN);
+    lv_obj_set_flex_align(top, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    buildStatusCard(top);
+    buildStationButtons(top);
+
     buildBoard(body);
 }
 
 void ElizabethPlugin::buildStatusCard(lv_obj_t* parent) {
     lv_obj_t* card = theme::makeCard(parent);
-    lv_obj_set_width(card, LV_PCT(100));
+    // Grows to fill whatever the buttons leave, rather than a fixed width: the status wording is
+    // TfL's and varies from "Good Service" to "Part Suspended", so a fixed box either truncates
+    // the long ones or wastes half the row on the short ones.
+    lv_obj_set_flex_grow(card, 1);
     lv_obj_set_height(card, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(card, theme::kGapS, LV_PART_MAIN);
@@ -196,21 +213,87 @@ void ElizabethPlugin::buildStatusCard(lv_obj_t* parent) {
 
     status_dot_ = theme::makeStatusDot(headline_row);
     // Larger than the header's dot: this one is the page's primary signal, not a decoration on a
-    // title bar, and it has to read from across the room alongside 40 px text.
+    // title bar, and it has to read from across the room alongside large text.
     lv_obj_set_size(status_dot_, theme::kStatusDotSize * 2, theme::kStatusDotSize * 2);
 
+    // fontTitle, not fontDisplay: the box is no longer full width, and 40 px wording like
+    // "Severe Delays" would wrap or clip inside it.
     status_headline_ =
-        theme::makeLabel(headline_row, "Checking...", theme::fontDisplay(), theme::textPrimary());
+        theme::makeLabel(headline_row, "Checking...", theme::fontTitle(), theme::textPrimary());
+    lv_obj_set_flex_grow(status_headline_, 1);
+    lv_label_set_long_mode(status_headline_, LV_LABEL_LONG_DOT);
 
     // The disruption text. Bounded on purpose: an observed message ran to 600 characters including
     // a list of every operator accepting tickets, and letting it grow without limit would push the
-    // departure board off the bottom of the screen. Three lines carries the substantive part, and
-    // LONG_DOT makes the truncation visible rather than silent.
+    // departure board off the bottom of the screen. Two lines carries the substantive part here —
+    // one fewer than before, because the row now has to fit buttons as well — and LONG_DOT makes
+    // the truncation visible rather than silent.
     status_reason_ = theme::makeLabel(card, "", theme::fontLabel(), theme::textSecondary());
     lv_obj_set_width(status_reason_, LV_PCT(100));
     lv_label_set_long_mode(status_reason_, LV_LABEL_LONG_DOT);
-    lv_obj_set_height(status_reason_, lv_font_get_line_height(theme::fontLabel()) * 3);
+    lv_obj_set_height(status_reason_, lv_font_get_line_height(theme::fontLabel()) * 2);
     lv_obj_add_flag(status_reason_, LV_OBJ_FLAG_HIDDEN);
+}
+
+void ElizabethPlugin::buildStationButtons(lv_obj_t* parent) {
+    lv_obj_t* group = theme::makeRow(parent);
+    lv_obj_set_width(group, LV_SIZE_CONTENT);
+    lv_obj_set_height(group, LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_column(group, theme::kGapS, LV_PART_MAIN);
+
+    // Abbey Wood first, left to right, matching the order of the day: the morning board is the
+    // Abbey Wood one.
+    abbey_button_ = theme::makeButton(group, "Abbey W");
+    lv_obj_add_event_cb(
+        abbey_button_,
+        [](lv_event_t* event) {
+            static_cast<ElizabethPlugin*>(lv_event_get_user_data(event))
+                ->selectJourney(Journey::ToLiverpoolStreet);
+        },
+        LV_EVENT_CLICKED, this);
+
+    liverpool_button_ = theme::makeButton(group, "Liv St");
+    lv_obj_add_event_cb(
+        liverpool_button_,
+        [](lv_event_t* event) {
+            static_cast<ElizabethPlugin*>(lv_event_get_user_data(event))
+                ->selectJourney(Journey::ToAbbeyWood);
+        },
+        LV_EVENT_CLICKED, this);
+}
+
+void ElizabethPlugin::selectJourney(Journey journey) {
+    // Paint immediately, before the fetch: the response takes a second or two and a button that
+    // does not move when pressed reads as a button that did not work.
+    manual_journey_ = journey;
+    manual_journey_valid_ = true;
+    updateStationButtons(journey);
+
+    if (requested_journey_valid_ && requested_journey_ == journey) {
+        return;  // already showing this board; nothing to fetch.
+    }
+    ESP_LOGI(kTag, "board set by hand: %s to %s", journeyOrigin(journey),
+             journeyDestination(journey));
+    requested_journey_ = journey;
+    requested_journey_valid_ = true;
+    refresh(/*force=*/true);
+}
+
+void ElizabethPlugin::updateStationButtons(Journey showing) {
+    // Guarded because onTick() calls this every 250 ms: restyling a widget marks it dirty and
+    // costs a redraw, so repainting an unchanged button would burn the LVGL thread four times a
+    // second for nothing.
+    if (buttons_showing_valid_ && buttons_showing_ == showing) {
+        return;
+    }
+    buttons_showing_ = showing;
+    buttons_showing_valid_ = true;
+
+    // The button names the station you are standing at, so ToAbbeyWood — the evening board, which
+    // you board at Liverpool Street — is the "Liv St" one. Getting this backwards would light the
+    // wrong button all day and read as a data bug rather than a labelling one.
+    theme::setButtonSelected(liverpool_button_, showing == Journey::ToAbbeyWood);
+    theme::setButtonSelected(abbey_button_, showing == Journey::ToLiverpoolStreet);
 }
 
 void ElizabethPlugin::buildBoard(lv_obj_t* parent) {
@@ -484,10 +567,71 @@ void ElizabethPlugin::renderCountdowns() {
     }
 }
 
+void ElizabethPlugin::summarise(dashboard::PluginSummary& out) const {
+    LineStatus status;
+    BoardData board;
+    Journey journey;
+    std::time_t fetched = 0;
+    {
+        // const method, non-const mutex: modelMutex() is mutable for exactly this reason — a
+        // read-only accessor still has to lock against the worker thread.
+        std::lock_guard<std::mutex> lock(modelMutex());
+        status = status_;
+        board = board_;
+        journey = journey_;
+        fetched = board_fetched_utc_;
+    }
+
+    out.primary.assign(status.valid ? status.description.c_str() : kNoData);
+
+    if (board.count == 0) {
+        // Distinguish "nothing running" from "not fetched yet": on the tile these look identical
+        // otherwise, and one of them is worth acting on.
+        out.secondary.assign(board.valid ? "No departures listed" : "Waiting for departures");
+        return;
+    }
+
+    // Same ageing as renderCountdowns(), for the same reason: the tile is on screen for minutes
+    // at a time between refreshes and a frozen countdown reads as a broken page.
+    long long elapsed = 0;
+    if (fetched > 0 && timeutil::systemTimeValid()) {
+        elapsed = static_cast<long long>(timeutil::nowUtc()) - static_cast<long long>(fetched);
+        if (elapsed < 0) {
+            elapsed = 0;
+        }
+    }
+
+    char countdown[32];
+    formatCountdown(countdown, sizeof(countdown),
+                    static_cast<int32_t>(board.departures[0].seconds_away - elapsed));
+
+    char line[64];
+    std::snprintf(line, sizeof(line), "%s: %s", journeyOrigin(journey), countdown);
+    out.secondary.assign(line);
+}
+
 void ElizabethPlugin::onTick() {
-    // Midday, or the clock arriving after boot, turns the board round. Refetch rather than relabel:
-    // the departures on screen are from the other end of the line and none of them apply.
+    // A manual choice lasts until the CLOCK changes its own mind — 13:30, or midnight. Detecting
+    // that as a change rather than testing "does the schedule now agree with the override" is what
+    // lets an override stand: at 14:00 the schedule says ToAbbeyWood and disagreeing with it is
+    // exactly what the user asked for, so disagreement cannot be the trigger.
+    const Journey scheduled = scheduledJourney();
+    if (last_scheduled_valid_ && scheduled != last_scheduled_ && manual_journey_valid_) {
+        ESP_LOGI(kTag, "schedule moved on; releasing the manual board choice");
+        manual_journey_valid_ = false;
+    }
+    last_scheduled_ = scheduled;
+    last_scheduled_valid_ = true;
+
+    // 13:30, a manual press, or the clock arriving after boot turns the board round. Refetch rather
+    // than relabel: the departures on screen are from the other end of the line and none apply.
     const Journey wanted = journeyForNow();
+
+    // Painted from the INTENT, not from the rendered model: between a press and its fetch landing
+    // the model still holds the old direction, and driving the buttons off it would snap the
+    // highlight back for a second or two.
+    updateStationButtons(wanted);
+
     if (!requested_journey_valid_) {
         // First tick. Record where we are without asking for anything — the ordinary refresh cycle
         // is about to fetch this direction anyway, and a second request here would just be

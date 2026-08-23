@@ -51,6 +51,7 @@
 #include "placeholder_plugin.hpp"
 #include "plugins/clock_plugin.hpp"
 #include "plugins/elizabeth_plugin.hpp"
+#include "plugins/summary_plugin.hpp"
 #include "plugins/weather_plugin.hpp"
 
 namespace {
@@ -64,6 +65,8 @@ constexpr uint64_t kHealthReportPeriodUs = 30ULL * 1000ULL * 1000ULL;
 // Statically allocated. Plugins live for the lifetime of the application, so there is no reason
 // to put them on the heap and every reason not to: their footprint is then visible in the
 // linker map rather than being a runtime surprise.
+plugins::SummaryPlugin g_summary;
+
 plugins::ClockPlugin g_clock;
 
 plugins::WeatherPlugin g_weather;
@@ -142,7 +145,8 @@ void applyPageConfiguration() {
 
     // Enabled flags are applied per plugin. An empty enabled_pages list means "all", which
     // Settings::pageEnabled() already handles.
-    static const char* const kRotationIds[] = {"clock", "weather", "elizabeth", "todos", "claude"};
+    static const char* const kRotationIds[] = {"summary", "clock",  "weather",
+                                               "elizabeth", "todos", "claude"};
     for (const char* id : kRotationIds) {
         g_pages.setEnabled(id, g_settings.pageEnabled(id));
     }
@@ -164,7 +168,7 @@ void applySettings(tab5::Board& board) {
                           g_settings.weather_label.c_str());
 
     // These control how OFTEN the line is polled, not which way the departure board faces — that
-    // turns round at midday. See elizabeth_plugin.hpp.
+    // turns round at 13:30, or by hand from the station buttons. See elizabeth_plugin.hpp.
     g_elizabeth.setCommuteWindows(g_settings.commute_morning_start_minutes,
                                   g_settings.commute_morning_end_minutes,
                                   g_settings.commute_evening_start_minutes,
@@ -776,6 +780,14 @@ extern "C" void app_main(void) {
         }
     }
 
+    // The summary page holds pointers to the others and must know them before it initialises,
+    // because its tiles are built once from that list. Settings is excluded deliberately: it is
+    // an overlay reached by long press, and a tile leading to it would make it a seventh page.
+    static dashboard::DashboardPlugin* const kSummarised[] = {&g_clock, &g_weather, &g_elizabeth,
+                                                              &g_todos, &g_claude};
+    g_summary.setPages(kSummarised, sizeof(kSummarised) / sizeof(kSummarised[0]), &g_pages);
+
+    initialisePlugin(g_summary);
     initialisePlugin(g_clock);
     initialisePlugin(g_weather);
     initialisePlugin(g_elizabeth);
@@ -789,7 +801,9 @@ extern "C" void app_main(void) {
         ESP_ERROR_CHECK(g_pages.begin(board.display()));
 
         // Registration order is the default page order. Settings is registered out of rotation
-        // and reached by long press.
+        // and reached by long press. Summary is first: it is the hub every other page's home
+        // icon returns to, so it belongs at one end of the rotation rather than the middle.
+        ESP_ERROR_CHECK(g_pages.add(&g_summary, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_clock, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_weather, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_elizabeth, /*in_rotation=*/true));
@@ -797,13 +811,26 @@ extern "C" void app_main(void) {
         ESP_ERROR_CHECK(g_pages.add(&g_claude, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_settings_page, /*in_rotation=*/false));
         g_pages.setOverlayPageId("settings");
+        g_pages.setHomePageId("summary");
 
         // Order and enabled flags come from stored settings; the loader lets the Settings page
         // re-apply them later without a restart.
         g_pages.setConfigurationLoader(&applyPageConfiguration);
         applyPageConfiguration();
 
+        // REGRESSION CANARY, and worth keeping. Building every page should cost ZERO internal
+        // SRAM, because components/lvgl_heap allocates LVGL from PSRAM. Anything other than ~0
+        // here means that allocator stopped being linked (it needs WHOLE_ARCHIVE) or LVGL was
+        // switched back to CONFIG_LV_USE_CLIB_MALLOC — which measured at 47,544 B for six
+        // pages and left an internal low-water of 26 KB instead of 107 KB.
+        const uint32_t internal_before =
+            heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         ESP_ERROR_CHECK(g_pages.startPages(g_settings.default_page.c_str()));
+        const int32_t page_internal_cost =
+            static_cast<int32_t>(internal_before) -
+            static_cast<int32_t>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        ESP_LOGI(kTag, "pages built: %" PRId32 " B of internal SRAM (expect ~0; see lvgl_heap)",
+                 page_internal_cost);
 
         // Remove the splash only once a real page is on screen, so there is never a frame of
         // empty background between the two.

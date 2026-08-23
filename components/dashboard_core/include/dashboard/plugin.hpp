@@ -25,7 +25,21 @@
 #include "esp_err.h"
 #include "lvgl.h"
 
+#include "dashboard/fixed_string.hpp"
+
 namespace dashboard {
+
+/// What a page says about itself on the summary tile: one headline and one supporting line.
+///
+/// Fixed capacity, because these are filled on the LVGL thread every tick and must not allocate.
+/// Both may be left empty — the summary page renders a dash rather than a blank tile.
+struct PluginSummary {
+    /// The number or state you would read from across the room: "18°C", "07:42", "Good Service".
+    ShortString primary;
+
+    /// The qualifier: "Partly cloudy", "23/08/2026", "Next train 4 min".
+    MediumString secondary;
+};
 
 /// Lifecycle of a plugin's data. Drives the header status dot and the footer text, so the
 /// user can always tell the difference between "loading", "this is old" and "this is broken".
@@ -98,6 +112,18 @@ class DashboardPlugin {
     virtual void onNetworkChanged(bool online) { (void)online; }
 
     virtual DataState state() const = 0;
+
+    /// Two lines for the summary page's tile: what this page would want you to know at a glance,
+    /// without opening it.
+    ///
+    /// Called ON THE LVGL THREAD from the summary page's tick, for every plugin whether visible
+    /// or not. So it must be cheap, and it must take the plugin's own model mutex — it reads the
+    /// same fields updateUi() does, and the worker thread may be writing them.
+    ///
+    /// The default leaves both lines empty, which renders as a dash. Deliberate: a plugin with
+    /// nothing to say should not be made to invent something, and a new page gets a working tile
+    /// before anyone writes its summary.
+    virtual void summarise(PluginSummary& out) const { (void)out; }
 };
 
 /// The subset of PageManager that a plugin is allowed to drive.

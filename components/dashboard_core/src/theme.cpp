@@ -229,6 +229,58 @@ lv_obj_t* makeCard(lv_obj_t* parent) {
     return card;
 }
 
+lv_obj_t* makeButton(lv_obj_t* parent, const char* text) {
+    lv_obj_t* button = lv_button_create(parent);
+    lv_obj_remove_style_all(button);
+    lv_obj_set_style_radius(button, kRadius, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_border_width(button, kHairline, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(button, kGapL, LV_PART_MAIN);
+    lv_obj_set_height(button, kTouchTarget);
+    lv_obj_set_width(button, LV_SIZE_CONTENT);
+
+    // A visible pressed state is not decoration here: the fetch it triggers takes a second or
+    // two, and without feedback the first thing a user does is press again.
+    lv_obj_set_style_bg_opa(button, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_bg_color(button, accent(), LV_PART_MAIN | LV_STATE_PRESSED);
+
+    lv_obj_t* label = lv_label_create(button);
+    lv_label_set_text(label, text != nullptr ? text : "");
+    lv_obj_set_style_text_font(label, fontBody(), LV_PART_MAIN);
+    lv_obj_center(label);
+
+    setButtonSelected(button, false);
+    return button;
+}
+
+void setButtonSelected(lv_obj_t* button, bool selected) {
+    if (button == nullptr) {
+        return;
+    }
+    lv_obj_set_style_bg_color(button, selected ? accent() : surface(), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(button, selected ? LV_OPA_COVER : LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_color(button, selected ? accent() : border(), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(button, selected ? LV_OPA_COVER : kBorderOpa, LV_PART_MAIN);
+
+    lv_obj_t* label = lv_obj_get_child(button, 0);
+    if (label != nullptr) {
+        lv_obj_set_style_text_color(label, selected ? textPrimary() : textSecondary(),
+                                    LV_PART_MAIN);
+    }
+}
+
+lv_obj_t* makeTapCard(lv_obj_t* parent) {
+    lv_obj_t* card = makeCard(parent);
+    lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
+    // Scrolling off by makePlain(); re-assert that a drag on a tile cannot scroll its own
+    // content, or a swipe across the summary page fights the tile under the finger.
+    lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_bg_color(card, surfaceAlt(), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_border_color(card, accent(), LV_PART_MAIN | LV_STATE_PRESSED);
+    lv_obj_set_style_border_opa(card, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_PRESSED);
+    return card;
+}
+
 lv_obj_t* makeRow(lv_obj_t* parent) {
     lv_obj_t* row = lv_obj_create(parent);
     makePlain(row);

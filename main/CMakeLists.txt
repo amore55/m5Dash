@@ -16,6 +16,7 @@ idf_component_register(
         clock
         weather
         elizabeth_line
+        summary
         json            # cJSON allocator hooks, pointed at PSRAM at boot
         mdns            # app_main advertises <hostname>.local once the link is up
         nvs_flash

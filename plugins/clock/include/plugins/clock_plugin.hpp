@@ -48,6 +48,10 @@ class ClockPlugin final : public dashboard::PluginBase {
     ClockFace face() const { return face_; }
     bool showSeconds() const { return show_seconds_; }
 
+    /// 24-hour time, with DD/MM/YYYY under it. No model to lock — the clock IS the system clock,
+    /// so this reads it directly rather than a parsed copy.
+    void summarise(dashboard::PluginSummary& out) const override;
+
   protected:
     void buildBody(lv_obj_t* body) override;
     esp_err_t fetch(bool force) override;

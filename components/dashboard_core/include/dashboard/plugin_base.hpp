@@ -109,7 +109,11 @@ class PluginBase : public DashboardPlugin {
     void setError(const char* reason);
 
     /// Guard for the subclass's own model. See the mutex discipline note above.
-    std::mutex& modelMutex() { return model_mutex_; }
+    ///
+    /// const, returning a non-const reference, because locking is not a modification of the
+    /// plugin's logical state: a read-only accessor like summarise() still has to lock against
+    /// the worker thread. Hence the mutable member.
+    std::mutex& modelMutex() const { return model_mutex_; }
 
     PageScaffold& ui() { return ui_; }
     bool visible() const { return visible_; }
@@ -151,7 +155,7 @@ class PluginBase : public DashboardPlugin {
     PageScaffold ui_;
     Worker worker_;
 
-    std::mutex model_mutex_;
+    mutable std::mutex model_mutex_;
 
     std::mutex detail_mutex_;
     FixedString<96> detail_;

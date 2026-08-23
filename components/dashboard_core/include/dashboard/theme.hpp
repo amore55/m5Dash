@@ -116,6 +116,29 @@ lv_obj_t* makeColumn(lv_obj_t* parent);
 /// Label with font and colour applied. `text` may be null for an initially empty label.
 lv_obj_t* makeLabel(lv_obj_t* parent, const char* text, const lv_font_t* font, lv_color_t colour);
 
+/// A pill button with a text label, sized for a finger rather than a mouse.
+///
+/// Height is kTouchTarget, not LV_SIZE_CONTENT: on glass this is the only dimension that
+/// matters, and letting the font decide it produces a 24 px target nobody can hit reliably.
+/// The returned object is the button; its label is its only child.
+lv_obj_t* makeButton(lv_obj_t* parent, const char* text);
+
+/// Selected / unselected appearance for a button used as a segmented toggle.
+///
+/// Selected is a filled accent; unselected is a hairline outline. Deliberately not a colour
+/// change alone — on a dim panel at an angle, fill versus outline survives where hue does not.
+void setButtonSelected(lv_obj_t* button, bool selected);
+
+/// A card that is also a tap target: the same surface as makeCard(), plus a pressed state and
+/// LV_OBJ_FLAG_CLICKABLE. Used for the summary page's tiles.
+///
+/// Callers attach their own LV_EVENT_CLICKED handler. The card keeps flex layout, so children
+/// are added exactly as they would be to makeCard().
+lv_obj_t* makeTapCard(lv_obj_t* parent);
+
+/// Minimum comfortable touch dimension. 64 px on a 1280x720 panel at arm's length.
+constexpr int32_t kTouchTarget = 64;
+
 /// A small filled circle used as a status indicator.
 lv_obj_t* makeStatusDot(lv_obj_t* parent);
 void setStatusDot(lv_obj_t* dot, DataState state);

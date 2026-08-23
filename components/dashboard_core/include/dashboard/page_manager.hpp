@@ -49,6 +49,17 @@ class PageManager : public PageHost {
     /// The id treated as the Settings overlay, opened by long press. Optional.
     void setOverlayPageId(const char* id) { overlay_page_id_ = id; }
 
+    /// The id the home button navigates to. Until this is set the button is hidden, so a build
+    /// with no summary page shows no control rather than a dead one.
+    ///
+    /// The button hides itself while that page is the visible one — a home icon on the home page
+    /// is a control that cannot do anything.
+    void setHomePageId(const char* id);
+
+    /// Navigate to the home page. Public because it is also the natural target for a future
+    /// gesture; the button is only one way in.
+    void goHome();
+
     /// Supplied by the application: re-reads page order / enabled flags from settings.
     /// Kept as a callback so dashboard_core does not depend on dashboard_storage.
     void setConfigurationLoader(std::function<void()> loader) {
@@ -111,6 +122,9 @@ class PageManager : public PageHost {
     void scheduleRefreshes();
     void applyPendingOnlineState();
 
+    /// Show or hide the home button for whichever page is now visible.
+    void updateHomeButton();
+
     Entry entries_[kMaxPlugins];
     size_t entry_count_ = 0;
 
@@ -128,6 +142,7 @@ class PageManager : public PageHost {
     size_t position_before_overlay_ = 0;
 
     const char* overlay_page_id_ = nullptr;
+    const char* home_page_id_ = nullptr;
     std::function<void()> config_loader_;
 
     lv_obj_t* screen_ = nullptr;
@@ -138,6 +153,10 @@ class PageManager : public PageHost {
     /// plugin's footer, and one indicator is less to keep in sync than six. Non-clickable, so
     /// touches pass straight through to the page beneath.
     lv_obj_t* indicator_ = nullptr;
+
+    /// Bottom-right home affordance, on the top layer beside the indicator. Clickable, which the
+    /// indicator deliberately is not — see the note where it is built.
+    lv_obj_t* home_button_ = nullptr;
 
     GestureDetector gestures_;
 
