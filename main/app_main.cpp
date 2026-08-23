@@ -457,6 +457,15 @@ void startWebServer() {
     callbacks.on_wifi = &storeSubmittedCredentials;
     callbacks.read_settings = &readSettingsSnapshot;
     callbacks.write_settings = &applyEditedSettings;
+    callbacks.on_secrets_changed = [] {
+        // A replaced token or key must take effect now, not at the next scheduled refresh — the
+        // owner has just typed it and is looking at the device. Both plugins tolerate a forced
+        // refresh whether or not their own credential was the one that changed, and the GitHub
+        // one is the expensive of the two at eleven requests, so this stays deliberately narrow.
+        ESP_LOGI(kTag, "a stored credential changed; refetching GitHub and the quote");
+        g_github.refresh(/*force=*/true);
+        g_clock.refresh(/*force=*/true);
+    };
     g_web.start(g_wifi, callbacks);
 }
 

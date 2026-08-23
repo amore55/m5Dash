@@ -481,12 +481,14 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
     // whether one is present. An ABSENT field leaves the stored secret alone, so saving the form
     // without retyping a token does not wipe it; an explicitly EMPTY field clears it, which is
     // the only way to remove one without a factory reset.
+    bool secrets_changed = false;
     char secret[dashboard::storage::kMaxSecretLength + 1] = {};
     if (findFormField(body, "github_token", secret, sizeof(secret))) {
         const esp_err_t stored =
             dashboard::storage::SecretStore::set(dashboard::storage::Secret::GithubToken, secret);
         ESP_LOGI(kTag, "GitHub token %s from the web page",
                  secret[0] == '\0' ? "cleared" : (stored == ESP_OK ? "stored" : "REJECTED"));
+        secrets_changed = secrets_changed || stored == ESP_OK;
     }
     secureZero(secret, sizeof(secret));
     if (findFormField(body, "quote_api_key", secret, sizeof(secret))) {
@@ -494,6 +496,7 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
             dashboard::storage::SecretStore::set(dashboard::storage::Secret::QuoteApiKey, secret);
         ESP_LOGI(kTag, "quote API key %s from the web page",
                  secret[0] == '\0' ? "cleared" : (stored == ESP_OK ? "stored" : "REJECTED"));
+        secrets_changed = secrets_changed || stored == ESP_OK;
     }
     secureZero(secret, sizeof(secret));
 
@@ -515,6 +518,12 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
                              "The dashboard could not save those settings.");
     }
     ESP_LOGI(kTag, "settings updated from the web page");
+
+    // AFTER the settings write, so a plugin refetching on a new credential also sees any changed
+    // configuration that arrived in the same POST.
+    if (secrets_changed && self->callbacks_.on_secrets_changed) {
+        self->callbacks_.on_secrets_changed();
+    }
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 

@@ -246,7 +246,12 @@ void ClockPlugin::setShowSeconds(bool show) {
 // ---------------------------------------------------------------------------------------
 
 esp_err_t ClockPlugin::fetch(bool force) {
-    (void)force;
+    if (force) {
+        // A forced refresh is either the owner pulling to refresh or a credential having just
+        // changed. Either way, give the quote a fresh set of attempts: a key that was wrong an
+        // hour ago is exactly the thing that has probably just been corrected.
+        quote_attempts_ = 0;
+    }
     // The only thing that can be "wrong" with a clock is not knowing the time, so that is what
     // the state machine reports — which gives the page a truthful "waiting for time sync" footer
     // instead of silently showing 01/01/1970.

@@ -69,10 +69,16 @@ class WebServer {
     /// hands over a complete object and lets the owner install it wherever it belongs.
     using SettingsWrite = std::function<esp_err_t(const dashboard::storage::Settings& incoming)>;
 
+    /// A stored credential changed. Needed because secrets do NOT travel through Settings — they
+    /// go straight to SecretStore — so `write_settings` cannot tell a plugin that its token was
+    /// replaced, and nothing would refetch until the next scheduled refresh or a reboot.
+    using SecretsChanged = std::function<void()>;
+
     struct Callbacks {
         WifiSubmit on_wifi;
         SettingsRead read_settings;
         SettingsWrite write_settings;
+        SecretsChanged on_secrets_changed;
     };
 
     /// Start serving. `wifi` supplies the network list and must outlive this object.

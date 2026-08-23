@@ -211,18 +211,33 @@ a cap reached exactly is almost never a coincidence.
 
 ### Wanted on the Elizabeth line page — not started
 
-**GitHub: only one repository comes back.** With a stored token the device logs
-`1 repositories from 4961 bytes (authenticated)`. The token is being read and accepted, so this is
-either genuinely all `amore55` owns, or the token lacks the scope to see private repositories. The
-device-side check is one tap: press **All repositories**, which switches the request from
-`affiliation=owner` to `affiliation=owner,collaborator,organization_member`. If that still returns
-one, it is a token-scope question (a fine-grained token needs read on Contents and Actions, and must
-have the target repositories or organisations selected), not a firmware one.
+**GitHub: token scope was the answer, and the status path is now verified.** The first token saw one
+repository; a replacement sees five, three of which run Actions:
 
-Related and unverified: `m5Dash` has **no workflow runs at all**, so every Actions column on the
-page currently reads "No actions" — which is the correct answer and means the status, drill-down and
-colour paths have never been seen with real data. They need a repository that actually runs Actions
-before anyone should believe them.
+```
+5 repositories from 25125 bytes (authenticated)
+amore55/recipo: Passed (build-and-publish)
+amore55/secondbrain: Passed (Build and publish Second Brain)
+amore55/mediahub-pro: Passed (Build MediaHub Pro Image)
+run lookups: 3 of 5 repositories have workflow runs, 0 failed
+```
+
+So if the list ever looks short, suspect the token before the firmware: a fine-grained token needs
+read on Contents and Actions **and** the target repositories or organisations explicitly selected.
+
+Timing confirms the estimate that shaped the page: 1 + 5 requests took ~10 s wall clock, so ~1.7 s
+per serialised TLS request and ~19 s for a full ten-repo refresh. The progressive render is what
+makes that tolerable.
+
+**STILL UNVERIFIED on this page:** the Failure and Running states and their colours — every run
+observed so far has passed — and the drill-down, which needs a tap. Also `github_all_repositories`
+is stored but only reachable from the page's own filter buttons; there is no settings-page control
+for it.
+
+**A stored credential now forces a refetch.** Secrets bypass `Settings` entirely (they go straight
+to `SecretStore`), so `write_settings` could not tell a plugin its token had been replaced, and
+nothing refetched until the next scheduled refresh or a reboot — which is exactly the friction hit
+when the second token was added. `WebServer::Callbacks::on_secrets_changed` closes it.
 
 **National Rail departures through Abbey Wood.** Alongside the Elizabeth line board, show the next
 few trains through Abbey Wood on the Southeastern side. **These are not in the TfL feed** — Abbey

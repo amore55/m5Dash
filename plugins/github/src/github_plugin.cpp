@@ -369,6 +369,7 @@ esp_err_t GithubPlugin::refreshRepositories() {
     }
 
     size_t failures = 0;
+    size_t with_runs = 0;
     for (size_t i = 0; i < repos.count; ++i) {
         // Abandon the remaining requests if the account changed or a drill-down was asked for
         // while this loop was running — ten more TLS handshakes for a list nobody is looking at
@@ -385,6 +386,13 @@ esp_err_t GithubPlugin::refreshRepositories() {
             ++failures;
             continue;  // leave run_known false: the row keeps saying "checking"
         }
+        if (entry.run_state != RunState::None) {
+            ++with_runs;
+            ESP_LOGI(kTag, "%s: %s (%s)", entry.full_name.c_str(),
+                     runStateText(entry.run_state),
+                     entry.run_workflow.empty() ? "unnamed workflow"
+                                                : entry.run_workflow.c_str());
+        }
 
         std::lock_guard<std::mutex> lock(modelMutex());
         // Match by name, not by index: the list could have been replaced under us by a forced
@@ -397,6 +405,10 @@ esp_err_t GithubPlugin::refreshRepositories() {
         }
         markDirty();
     }
+
+    ESP_LOGI(kTag, "run lookups: %u of %u repositories have workflow runs, %u failed",
+             static_cast<unsigned>(with_runs), static_cast<unsigned>(repos.count),
+             static_cast<unsigned>(failures));
 
     if (failures > 0 && failures == repos.count) {
         // Every status failed, which almost always means the rate limit. Worth saying, because
