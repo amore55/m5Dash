@@ -58,8 +58,27 @@ lv_color_t colourForRunState(RunState state) {
 GithubPlugin::GithubPlugin() : PluginBase("github", "GitHub") {}
 
 uint32_t GithubPlugin::refreshIntervalMs() const {
-    // Deliberately slow. A refresh is eleven requests; unauthenticated GitHub allows sixty an
-    // hour, so anything much faster than this cannot complete twice without being rate limited.
+    // FAST WHILE SOMETHING IS RUNNING, slow otherwise.
+    //
+    // The slow interval alone made a running build unobservable, which defeats the point of
+    // showing run state at all: a typical run lasts two to five minutes, so at fifteen-minute
+    // polling it would start and finish between refreshes and only ever appear as a result. Once
+    // anything is queued or in progress the page polls every two minutes until it settles.
+    //
+    // Deliberately driven by DATA rather than by which page is visible: a build kicked off while
+    // the summary page is up should still light its tile promptly.
+    {
+        std::lock_guard<std::mutex> lock(modelMutex());
+        for (const RepoList* list : {&mine_, &work_}) {
+            for (size_t i = 0; i < list->count; ++i) {
+                if (list->repos[i].run_known && runStateBusy(list->repos[i].run_state)) {
+                    return dash::cfg::kGithubBusyRefreshMs;
+                }
+            }
+        }
+    }
+    // Slow. A refresh is seven requests per list; unauthenticated GitHub allows sixty an hour, so
+    // anything much faster than this cannot complete twice without being rate limited.
     return dash::cfg::kGithubRefreshMs;
 }
 

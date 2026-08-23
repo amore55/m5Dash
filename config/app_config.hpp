@@ -47,6 +47,14 @@ constexpr uint32_t kTflIdleRefreshMs = 10u * 60u * 1000u;        // 10 minutes o
 /// 60 an hour, so 15 minutes is about as often as this can run and still leave headroom for the
 /// drill-down requests a person actually triggers.
 constexpr uint32_t kGithubRefreshMs = 15u * 60u * 1000u;
+
+/// GitHub, while a workflow run is QUEUED or IN PROGRESS.
+///
+/// The slow interval makes a running build effectively invisible: a typical run lasts two to five
+/// minutes and would start and finish between two 15-minute refreshes, so the page would only ever
+/// show finished results. Two minutes is short enough to catch a build in flight and still costs
+/// only ~420 requests an hour against an authenticated limit of 5000.
+constexpr uint32_t kGithubBusyRefreshMs = 2u * 60u * 1000u;
 constexpr uint32_t kClaudeRefreshMs = 5u * 60u * 1000u;          // ~5 minutes
 constexpr uint32_t kTodosRefreshMs = 30u * 1000u;                // UI reconcile only
 
