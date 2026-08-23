@@ -59,6 +59,13 @@ step what reasoning about the display driver would not have.** The panel-detecti
 README is a real and famous fault on this board, and it is the wrong answer here — a black screen is
 not evidence of it when the firmware is demonstrably alive.
 
+> ⚠️ **That last sentence cost a session.** It is true of *this* fault and it became a reason not to
+> look again. A second, unrelated blank-screen fault followed and it **was** panel detection — see
+> the next section. "The firmware is demonstrably alive" does not rule out a display bug, because
+> nothing in this design makes the UI a precondition for the firmware running: Wi-Fi, HTTP and every
+> plugin come up perfectly with the wrong panel driver loaded. Treat "alive but blank" as its own
+> class of fault, not as evidence against the display.
+
 **Verified: dimming follows the schedule, and a tap raises the panel to 70 % (observed twice).
 NOT yet verified: the 60 s wake expiring back to night brightness.** Three attempts to observe it
 failed for the reason in §1.1b — closing the monitor rebooted the device and wiped the wake. The
@@ -71,6 +78,71 @@ may be 0, daytime brightness has a floor of 10 %. The asymmetry is the point —
 raise the day level again, so 0 there is a soft brick, whereas 0 at night is now recoverable with a
 finger. Note this also changed the dim tick from 30 s to 1 s, so at night the screen now dims about
 five seconds after boot rather than half a minute.
+
+### 🔴 The cold-boot dark screen — panel detection needed the LCD rail, and never had it
+
+**Fixed.** Different fault from the one above, same symptom class, and it survived six weeks of
+testing because **every test boot was a soft reset.**
+
+Symptom: from the wall socket the backlight lights and the panel stays blank forever, while the
+firmware behind it runs perfectly — Wi-Fi up, HTTP answering, plugins fetching, health reports
+flowing. Flash or reset over USB and the screen works every single time.
+
+Cause is an **ordering bug, and a circular one.** `Board::init()` identifies the panel by reading
+the touch controller. On this board the touch controller has **no reset line of its own** —
+`BSP_LCD_RST` is `GPIO_NUM_NC`, and `bsp_touch_new()` notes its reset is "usually shared with LCD
+reset" — so with the LCD rail down it is held in reset and NACKs everything. We asserted only
+`BSP_FEATURE_TOUCH` before probing and left `BSP_FEATURE_LCD` to panel creation, which runs
+*afterwards*. So we needed the touch controller to choose the panel driver, and the touch controller
+needed the rail that only the panel driver's own bring-up switched on.
+
+Why a warm reset hid it completely: the IO expander carrying both rails is **a separate chip on I2C
+with its own supply, and a CPU reset does not clear its outputs.** After any soft reset both rails
+are still high from the previous run and the controller has been awake for as long as the device has
+been plugged in, so it answers the first probe instantly.
+
+Why it produced a blank screen instead of an error: a failed probe was not treated as a failure. It
+was read as *evidence about which board this is* and fell through to ILI9881C — so an ST7121 was
+driven by the wrong driver at the wrong DSI timings. The LCD rail, the DSI PHY and the backlight all
+come up flawlessly; the panel simply never receives a signal it can lock to.
+
+The captured proof, from one cold boot, is worth keeping because the two halves contradict:
+
+```
+W (2623) board: no ST712x touch controller after 774 ms; assuming ILI9881C
+I (2623) board: detected panel: ILI9881C
+I (2630) M5Stack Tab5: Install MIPI DSI LCD control panel   <- this brings up the LCD rail
+I (3135) M5Stack Tab5: Discovered board version 2
+I (3430) ST7123: Firmware version: 1(1.80.1.16)             <- version 1 == kFwVersionSt7121
+```
+
+We ruled the panel out at 2623 ms; the BSP read it perfectly at 3430 ms, and the version it read is
+the one we had just excluded. **Waiting longer would never have fixed it** — the first attempt at
+this raised the probe budget to 750 ms and still failed, because time was not the missing thing.
+
+Fix, in `components/tab5_board/src/board.cpp`, both parts needed:
+
+* assert **both** rails before probing, **LCD first** (both calls are idempotent, so it is free), and
+* treat probe failure as "not ready yet" until a budget is spent, and only then as "not present" —
+  50 ms settle, retry every 25 ms, plus retries on the version register.
+
+After the fix, on a cold boot: `touch controller answered after 74 ms` → `detected panel: ST7121`.
+That 74 ms is why the second part is not redundant — with the rail up the controller still needs
+tens of milliseconds, so the old zero-delay probe would have stayed marginal.
+
+**Diagnostic lesson: the decisive evidence was a serial capture that outlived the power cycle.** A
+watcher that polls for the port, opens it, and reopens on disconnect (`scratchpad/coldboot.py`
+pattern) is the only way to see a cold boot, because the port does not exist until the device
+powers up. Every earlier attempt reset the device and captured the working case instead — see §1.1b.
+
+Two loose ends deliberately left open:
+
+* **Reset reason is `other watchdog (system/RTC)` (`esp_reset_reason=7`) on every boot, never
+  `POWERON`.** Not a crash loop: the stored core dump was byte-identical (28256 bytes) across boots,
+  so nothing new is being written. Most likely how this board's power-on presents. Unexplained.
+* **A stale core dump sits at `0xf20000`** from an older build and is **unreadable** —
+  `coredump SHA256(102446ad5) != app SHA256(908f3a758)`. `idf.py coredump-erase` would clear it so
+  the next real crash is unambiguous; not done, as it is a device write nobody asked for.
 
 ### 🔴 Size response buffers from a DAYTIME sample
 

@@ -9,6 +9,9 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
 #include "esp_check.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_st7121.h"
@@ -43,6 +46,80 @@ constexpr uint8_t kSt712xTouchAddress = 0x55;
 constexpr uint16_t kTouchFwVersionReg = 0x0000;
 constexpr uint8_t kFwVersionSt7121 = 1;
 constexpr uint8_t kFwVersionSt7123 = 3;
+
+// ---------------------------------------------------------------------------------------
+// THE COLD-BOOT DARK-SCREEN BUG
+//
+// Symptom: from the wall socket the backlight lights and the panel stays blank forever, while
+// the firmware behind it runs perfectly — Wi-Fi up, HTTP answering, plugins fetching. Flash or
+// reset over USB and the screen works every time. Six weeks of testing never saw it, because
+// every test boot was a soft reset.
+//
+// Cause: detection identifies the panel by reading the TOUCH controller, and on this board the
+// touch controller cannot be read until the LCD RAIL is live. BSP_LCD_RST is GPIO_NUM_NC and
+// bsp_touch_new() notes that touch reset is "usually shared with LCD reset", so with the LCD
+// rail down the controller is held in reset and NACKs everything. Board::init() used to assert
+// only BSP_FEATURE_TOUCH before probing and leave the LCD rail to panel creation, which happens
+// afterwards — so the probe could never succeed from cold.
+//
+// It succeeded on a warm reset for a second, compounding reason: the IO expander carrying both
+// rails is a separate chip on I2C with its own supply, and a CPU reset does not clear its
+// outputs. After a soft reset BOTH rails are still high from the previous run and the controller
+// has been awake for as long as the device has been plugged in.
+//
+// Why that produced a blank screen rather than an error: a failed probe was not treated as a
+// failure. It was read as evidence about which board this is, and fell through to ILI9881C — so
+// an ST7121 was driven by the wrong driver at the wrong timings. The LCD rail, the DSI PHY and
+// the backlight all come up flawlessly and the panel never receives a signal it can lock to.
+//
+// Measured on the failing unit: probe never answered in 774 ms with the LCD rail down; the BSP's
+// own touch driver then read firmware version 1 — kFwVersionSt7121, the panel we had just ruled
+// out — about 500 ms after panel creation brought that rail up.
+//
+// Two rules follow, and both are needed:
+//   * assert the LCD rail BEFORE probing (see Board::init), and
+//   * treat probe failure as "not ready yet" until the budget is spent, and only then as
+//     "not present".
+// ---------------------------------------------------------------------------------------
+
+/// Settle time before the first probe, covering the controller's own power-on reset.
+constexpr uint32_t kTouchSettleMs = 50;
+
+/// Total time the controller is allowed to take before it is judged absent.
+///
+/// Generous on purpose, and asymmetric in cost: an ST712x answers as soon as it is ready and
+/// returns immediately, so this budget is only ever spent in full on a genuine ILI9881C board,
+/// where it delays boot once. Giving up early costs a device that never displays anything.
+constexpr uint32_t kTouchDetectBudgetMs = 1500;
+
+/// Gap between retries, for both the probe and the version read.
+constexpr uint32_t kTouchRetryMs = 25;
+
+/// A controller that answers a probe may still not serve its firmware register on the first ask.
+constexpr int kVersionReadAttempts = 5;
+
+/// Wait for the ST712x touch controller to answer at 0x55, and report how long that took.
+///
+/// Returns false only once kTouchDetectBudgetMs has elapsed with no answer, which is the one
+/// case that genuinely means "there is no ST712x here".
+bool waitForTouchController(i2c_master_bus_handle_t bus, uint32_t& waited_ms) {
+    const int64_t start_us = esp_timer_get_time();
+    const int64_t deadline_us = start_us + static_cast<int64_t>(kTouchDetectBudgetMs) * 1000;
+
+    vTaskDelay(pdMS_TO_TICKS(kTouchSettleMs));
+    for (;;) {
+        const bool answered = i2c_master_probe(bus, kSt712xTouchAddress, 100) == ESP_OK;
+        const int64_t now_us = esp_timer_get_time();
+        waited_ms = static_cast<uint32_t>((now_us - start_us) / 1000);
+        if (answered) {
+            return true;
+        }
+        if (now_us >= deadline_us) {
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(kTouchRetryMs));
+    }
+}
 
 /// MIPI-DSI lane bit rate for the ST7121, in Mbps.
 /// 965, taken from M5Stack's working firmware. The BSP's 1000 is for the other panels.
@@ -82,10 +159,15 @@ PanelType detectPanel() {
         return PanelType::Ili9881c;
     }
 
-    if (i2c_master_probe(bus, kSt712xTouchAddress, 100) != ESP_OK) {
-        // No ST712x touch controller: this is the older GT911 board.
+    uint32_t waited_ms = 0;
+    if (!waitForTouchController(bus, waited_ms)) {
+        // No ST712x touch controller after a full power-on budget: the older GT911 board.
+        // Logged with the wait, because on an ST712x unit this line is the dark-screen symptom.
+        ESP_LOGW(kTag, "no ST712x touch controller after %" PRIu32 " ms; assuming ILI9881C",
+                 waited_ms);
         return PanelType::Ili9881c;
     }
+    ESP_LOGI(kTag, "touch controller answered after %" PRIu32 " ms", waited_ms);
 
     i2c_device_config_t dev_cfg = {};
     dev_cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
@@ -102,7 +184,13 @@ PanelType detectPanel() {
     const uint8_t reg[2] = {static_cast<uint8_t>(kTouchFwVersionReg >> 8),
                             static_cast<uint8_t>(kTouchFwVersionReg & 0xFF)};
     uint8_t version = 0;
-    const esp_err_t err = i2c_master_transmit_receive(dev, reg, sizeof(reg), &version, 1, 200);
+    esp_err_t err = ESP_ERR_TIMEOUT;
+    for (int attempt = 0; attempt < kVersionReadAttempts && err != ESP_OK; ++attempt) {
+        if (attempt > 0) {
+            vTaskDelay(pdMS_TO_TICKS(kTouchRetryMs));
+        }
+        err = i2c_master_transmit_receive(dev, reg, sizeof(reg), &version, 1, 200);
+    }
     i2c_master_bus_rm_device(dev);
 
     if (err != ESP_OK) {
@@ -225,7 +313,23 @@ esp_err_t Board::init() {
     // I2C and the touch rail must be up before the panel can be identified, because the
     // identification is done by reading the touch controller.
     ESP_RETURN_ON_ERROR(bsp_i2c_init(), kTag, "I2C init failed");
-    bsp_feature_enable(BSP_FEATURE_TOUCH, true);
+
+    // BOTH rails, and the LCD one FIRST — see the note above waitForTouchController(). The touch
+    // controller has no reset line of its own (BSP_LCD_RST is GPIO_NUM_NC, and bsp_touch_new notes
+    // its reset is "usually shared with LCD reset"), so from cold it stays mute until the LCD rail
+    // is live. Enabling only BSP_FEATURE_TOUCH here and letting panel creation bring up the LCD
+    // rail afterwards is what made cold-boot detection impossible.
+    //
+    // Both are idempotent — createSt7121Panel() and bsp_display_new_with_handles() each assert the
+    // LCD rail again — so doing it early costs nothing.
+    const esp_err_t lcd_rail = bsp_feature_enable(BSP_FEATURE_LCD, true);
+    if (lcd_rail != ESP_OK) {
+        ESP_LOGW(kTag, "LCD rail enable failed: %s", esp_err_to_name(lcd_rail));
+    }
+    const esp_err_t touch_rail = bsp_feature_enable(BSP_FEATURE_TOUCH, true);
+    if (touch_rail != ESP_OK) {
+        ESP_LOGW(kTag, "touch rail enable failed: %s", esp_err_to_name(touch_rail));
+    }
 
     const PanelType panel_type = detectPanel();
     ESP_LOGI(kTag, "detected panel: %s", toString(panel_type));
