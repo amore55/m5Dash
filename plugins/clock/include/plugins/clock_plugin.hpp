@@ -19,10 +19,12 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <ctime>
 
 #include "dashboard/plugin_base.hpp"
+#include "plugins/quote_provider.hpp"
 
 namespace plugins {
 
@@ -58,13 +60,25 @@ class ClockPlugin final : public dashboard::PluginBase {
     void updateUi() override;
     void onTick() override;
 
+    /// Still false even though the page now fetches a quote. The clock must work with no network
+    /// at all, and the quote is decoration: its absence is not a fault and must never put this
+    /// page into an error state.
     bool requiresNetwork() const override { return false; }
     bool showHeaderClock() const override { return false; }
-    /// No TLS, no JSON — the worker only ever evaluates the system clock.
-    uint32_t workerStackBytes() const override { return 3072; }
+
+    /// Tracked only so the quote fetch can wait for DNS. The clock itself does not care.
+    void onNetworkChanged(bool online) override;
+    /// Raised from 3072 for the quote fetch: one TLS handshake plus a small cJSON parse. The
+    /// response buffer itself is in PSRAM (ResponseBuffer), so this only covers the recursion.
+    uint32_t workerStackBytes() const override { return 8192; }
 
   private:
     static constexpr size_t kDigitCount = 6;  ///< HHMMSS
+
+    /// Fetch a quote if one is due, and never fail the refresh because of it.
+    void maybeFetchQuote();
+    void renderQuote(const Quote& quote);
+    void loadCachedQuote();
 
     void buildMinimalFace(lv_obj_t* parent);
     void buildFlapFace(lv_obj_t* parent);
@@ -89,6 +103,31 @@ class ClockPlugin final : public dashboard::PluginBase {
     lv_obj_t* flap_digits_[kDigitCount] = {};
     lv_obj_t* flap_seconds_group_ = nullptr;
     lv_obj_t* flap_date_ = nullptr;
+
+    // ---- quote --------------------------------------------------------------------------
+    /// ONE label, a sibling of both face roots rather than a child of either, so it sits under
+    /// whichever face is showing without being built twice and kept in sync.
+    lv_obj_t* quote_label_ = nullptr;
+
+    QuoteProvider quotes_;
+
+    /// Guarded by modelMutex(): written on the worker, read by updateUi() and summarise().
+    Quote quote_;
+
+    /// The bucket the attempt counter refers to. Worker thread only.
+    int64_t quote_attempted_bucket_ = -1;
+
+    /// Attempts made for that bucket.
+    ///
+    /// A COUNTER, NOT A FLAG. The first version set a "tried this bucket" flag before fetching,
+    /// which meant the fetch that inevitably fails four seconds into boot — DNS is not up yet —
+    /// suppressed the quote for the rest of the half-day. A small cap retries a transient failure
+    /// at the 60 s refresh cadence while still refusing to hammer a rejected key 720 times.
+    int quote_attempts_ = 0;
+
+    /// Whether the network is up, so the quote is not attempted before DNS exists. Set from the
+    /// LVGL thread by onNetworkChanged(), read on the worker.
+    std::atomic<bool> network_online_{false};
 
     /// Last rendered values, so the labels are only touched when they actually change.
     /// Rewriting a transformed label every 250 ms would force a needless full redraw.

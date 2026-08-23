@@ -156,10 +156,18 @@ void SummaryPlugin::buildTile(lv_obj_t* parent, Tile& tile) {
     tile.primary = theme::makeLabel(tile.card, kNoData, theme::fontHero(), theme::textPrimary());
     lv_obj_set_width(tile.primary, LV_PCT(100));
     lv_label_set_long_mode(tile.primary, LV_LABEL_LONG_DOT);
+    // Centred within the full-width label. The title row above stays left-aligned with its dot:
+    // that is a caption saying WHICH tile this is, and centring it would leave the dot floating
+    // in the middle of the card with nothing to anchor it.
+    lv_obj_set_style_text_align(tile.primary, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
 
-    tile.secondary = theme::makeLabel(tile.card, "", theme::fontBody(), theme::textSecondary());
+    // fontTitle, up from fontBody: this line carries the date, the sky and the countdown — the
+    // things you actually read after the headline number — and at fontBody it was the smallest
+    // text on a tile built to be read from across a desk.
+    tile.secondary = theme::makeLabel(tile.card, "", theme::fontTitle(), theme::textSecondary());
     lv_obj_set_width(tile.secondary, LV_PCT(100));
     lv_label_set_long_mode(tile.secondary, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(tile.secondary, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
 }
 
 // ---------------------------------------------------------------------------------------

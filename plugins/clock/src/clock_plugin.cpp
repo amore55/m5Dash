@@ -3,7 +3,11 @@
 #include <cstdio>
 #include <cstring>
 
+#include "esp_log.h"
+
 #include "app_config.hpp"
+#include "dashboard/net/response_buffer.hpp"
+#include "dashboard/storage/cache_store.hpp"
 #include "dashboard/theme.hpp"
 #include "dashboard/time_utils.hpp"
 
@@ -13,6 +17,17 @@ namespace {
 using dashboard::theme::applyHeroScale;
 namespace theme = dashboard::theme;
 namespace timeutil = dashboard::timeutil;
+using dashboard::storage::CacheStore;
+
+constexpr const char* kTag = "clock";
+
+/// Cache key for the quote body, so a restart inside the same half-day reuses it.
+constexpr const char* kQuoteCacheKey = "quote";
+
+/// Attempts allowed per half-day before giving up on the quote until the next bucket. Four, at
+/// the 60 s refresh cadence, covers a slow Wi-Fi association or a brief upstream blip without
+/// retrying a rejected key all day.
+constexpr int kMaxQuoteAttempts = 4;
 
 /// Minimal face: 48 px base font at 350 % ≈ 168 px tall digits, readable right across a room.
 ///
@@ -76,6 +91,17 @@ void ClockPlugin::buildBody(lv_obj_t* body) {
     buildMinimalFace(container_);
     buildFlapFace(container_);
     applyFaceVisibility();
+
+    // Sibling of both faces, so it appears beneath whichever one is visible. Hidden until a
+    // quote actually lands — an empty label would still take up its two lines and push the face
+    // off centre for anyone with no api-ninjas key.
+    quote_label_ = theme::makeLabel(container_, "", theme::fontTitle(), theme::textMuted());
+    lv_obj_set_width(quote_label_, LV_PCT(80));
+    lv_label_set_long_mode(quote_label_, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(quote_label_, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_add_flag(quote_label_, LV_OBJ_FLAG_HIDDEN);
+
+    loadCachedQuote();
 }
 
 void ClockPlugin::buildMinimalFace(lv_obj_t* parent) {
@@ -221,14 +247,127 @@ void ClockPlugin::setShowSeconds(bool show) {
 
 esp_err_t ClockPlugin::fetch(bool force) {
     (void)force;
-    // Nothing is fetched. The only thing that can be "wrong" with a clock is not knowing the
-    // time, so that is what the state machine reports — which gives the page a truthful
-    // "waiting for time sync" footer instead of silently showing 01/01/1970.
+    // The only thing that can be "wrong" with a clock is not knowing the time, so that is what
+    // the state machine reports — which gives the page a truthful "waiting for time sync" footer
+    // instead of silently showing 01/01/1970.
     if (!timeutil::systemTimeValid()) {
         setError("waiting for time sync");
         return ESP_ERR_INVALID_STATE;
     }
+
+    // AFTER the time check and outside the state machine: the quote cannot influence what this
+    // function returns. A page that reported an error because a decorative quote failed would be
+    // lying about the clock, which is the one thing it must be trusted on.
+    maybeFetchQuote();
     return ESP_OK;
+}
+
+void ClockPlugin::onNetworkChanged(bool online) {
+    network_online_.store(online, std::memory_order_relaxed);
+    PluginBase::onNetworkChanged(online);
+}
+
+void ClockPlugin::maybeFetchQuote() {
+    if (!QuoteProvider::configured()) {
+        return;  // no key: the feature is off, not broken
+    }
+    if (!network_online_.load(std::memory_order_relaxed)) {
+        // No point resolving a hostname with no route. This is the common case at boot, where the
+        // first refresh runs seconds before the Wi-Fi link comes up.
+        return;
+    }
+
+    const int64_t bucket = quoteBucket(timeutil::nowUtc(), timeutil::systemTimeValid());
+    if (bucket < 0) {
+        return;  // clock not settled; a quote fetched now would be filed under the wrong half-day
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(modelMutex());
+        if (quote_.valid && quote_.bucket == bucket) {
+            return;  // already have this half-day's quote
+        }
+    }
+
+    if (quote_attempted_bucket_ != bucket) {
+        quote_attempted_bucket_ = bucket;
+        quote_attempts_ = 0;
+    }
+    if (quote_attempts_ >= kMaxQuoteAttempts) {
+        return;
+    }
+    ++quote_attempts_;
+
+    dashboard::net::ResponseBuffer buffer(QuoteProvider::kResponseBytes);
+    if (!buffer.valid()) {
+        return;
+    }
+
+    Quote fetched;
+    if (quotes_.fetch(buffer.data(), buffer.capacity(), fetched) != ESP_OK) {
+        ESP_LOGW(kTag, "quote unavailable: %s", quotes_.lastError());
+        return;
+    }
+    fetched.bucket = bucket;
+
+    {
+        std::lock_guard<std::mutex> lock(modelMutex());
+        quote_ = fetched;
+    }
+    // Cached so a restart inside the same half-day shows the same quote rather than spending
+    // another request — the whole point of a bucket rather than a timer.
+    CacheStore::put(kQuoteCacheKey, buffer.data(), std::strlen(buffer.data()));
+    ESP_LOGI(kTag, "quote for bucket %lld by %s", static_cast<long long>(bucket),
+             fetched.author.empty() ? "an unknown author" : fetched.author.c_str());
+    markDirty();
+}
+
+void ClockPlugin::loadCachedQuote() {
+    if (!CacheStore::has(kQuoteCacheKey)) {
+        return;
+    }
+    dashboard::net::ResponseBuffer buffer(QuoteProvider::kResponseBytes);
+    if (!buffer.valid()) {
+        return;
+    }
+    size_t length = 0;
+    if (CacheStore::get(kQuoteCacheKey, buffer.data(), buffer.capacity(), &length) != ESP_OK ||
+        length == 0) {
+        return;
+    }
+
+    Quote cached;
+    if (!parseQuote(buffer.data(), length, cached)) {
+        CacheStore::remove(kQuoteCacheKey);
+        return;
+    }
+    // The bucket is deliberately NOT restored from the cache — it was not stored, and the stamp
+    // is the cache's own. Leaving it at -1 means the next fetch() re-derives the current bucket
+    // and refreshes if the half-day has moved on, while the cached text shows meanwhile.
+    std::lock_guard<std::mutex> lock(modelMutex());
+    quote_ = cached;
+}
+
+void ClockPlugin::renderQuote(const Quote& quote) {
+    if (quote_label_ == nullptr) {
+        return;
+    }
+    if (!quote.valid || quote.text.empty()) {
+        lv_obj_add_flag(quote_label_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    char text[320];
+    if (quote.author.empty()) {
+        std::snprintf(text, sizeof(text), "\"%s\"", quote.text.c_str());
+    } else {
+        // The bullet is in the glyph range (0x2022); an em dash is not, and would render as an
+        // empty box. See the font note in theme.hpp.
+        std::snprintf(text, sizeof(text), "\"%s\"  %s %s", quote.text.c_str(), "\xE2\x80\xA2",
+                      quote.author.c_str());
+    }
+    lv_label_set_text(quote_label_, text);
+    lv_obj_remove_flag(quote_label_, LV_OBJ_FLAG_HIDDEN);
 }
 
 void ClockPlugin::summarise(dashboard::PluginSummary& out) const {
@@ -255,6 +394,13 @@ void ClockPlugin::updateUi() {
     last_rendered_second_ = -1;
     last_rendered_minute_ = -1;
     renderTime(now, known);
+
+    Quote quote;
+    {
+        std::lock_guard<std::mutex> lock(modelMutex());
+        quote = quote_;
+    }
+    renderQuote(quote);
 }
 
 void ClockPlugin::onTick() {
