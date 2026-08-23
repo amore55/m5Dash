@@ -179,12 +179,14 @@ esp_err_t GithubProvider::fetchLatestRun(RepoScope scope, const char* full_name,
     if (runs.count == 0) {
         entry.run_state = RunState::None;
         entry.run_workflow.clear();
+        entry.run_actor.clear();
         entry.run_updated_utc = 0;
         return ESP_OK;
     }
 
     entry.run_state = runs.runs[0].state;
     entry.run_workflow = runs.runs[0].workflow;
+    entry.run_actor = runs.runs[0].actor;
     entry.run_updated_utc = runs.runs[0].updated_utc;
     return ESP_OK;
 }

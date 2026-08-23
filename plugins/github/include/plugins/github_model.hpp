@@ -98,6 +98,14 @@ struct RepoEntry {
     bool run_known = false;  ///< A runs request has completed for this repo, whatever it said.
     dashboard::ShortString run_workflow;
     std::time_t run_updated_utc = 0;
+
+    /// Who set the latest run going — the GitHub login, so it matches what you see on the site.
+    ///
+    /// Free: it is already in the `actions/runs` response the status comes from, so showing it
+    /// costs no extra request. Empty for a repository with no runs, where there is nothing to
+    /// attribute; finding the last pusher THERE would need a separate /commits call per
+    /// repository, which is not worth another six requests a refresh.
+    dashboard::ShortString run_actor;
 };
 
 struct RepoList {
@@ -130,6 +138,14 @@ bool parseRepos(const char* json, size_t len, const char* username, RepoList& ou
 struct RunEntry {
     RunState state = RunState::Unknown;
     dashboard::ShortString workflow;
+
+    /// Who triggered this run.
+    ///
+    /// `actor.login` where present, falling back to the head commit's author name. Note that for
+    /// a SCHEDULED run this is whichever account owns the schedule — often a bot — rather than a
+    /// person who pushed anything. That is genuinely who triggered it, so it is shown as-is
+    /// rather than blanked: "espressif-bot ran this on a timer" is information.
+    dashboard::ShortString actor;
 
     /// The commit subject or run name — what the run was FOR. Truncated for display.
     dashboard::MediumString title;

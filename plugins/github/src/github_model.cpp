@@ -259,12 +259,25 @@ bool parseRuns(const char* json_text, size_t len, RunList& out) {
 
         json::string(node, "name", entry.workflow);
 
+        const cJSON* head = json::object(node, "head_commit");
+
         // display_title is the commit subject for a push run and the run name otherwise, which
         // is the more useful of the two for a board. Fall back to the head commit message.
-        if (!json::string(node, "display_title", entry.title)) {
-            const cJSON* head = json::object(node, "head_commit");
-            if (head != nullptr) {
-                json::string(head, "message", entry.title);
+        if (!json::string(node, "display_title", entry.title) && head != nullptr) {
+            json::string(head, "message", entry.title);
+        }
+
+        // Who set it going. actor.login first, because it is a GitHub identity and therefore
+        // matches what the website shows; the commit author's name is the fallback for the rare
+        // run that carries no actor.
+        const cJSON* actor = json::object(node, "actor");
+        if (actor != nullptr) {
+            json::string(actor, "login", entry.actor);
+        }
+        if (entry.actor.empty() && head != nullptr) {
+            const cJSON* author = json::object(head, "author");
+            if (author != nullptr) {
+                json::string(author, "name", entry.actor);
             }
         }
 

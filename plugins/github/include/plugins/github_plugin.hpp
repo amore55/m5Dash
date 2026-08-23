@@ -141,6 +141,7 @@ class GithubPlugin final : public dashboard::PluginBase {
     struct RepoRow {
         lv_obj_t* root = nullptr;
         lv_obj_t* name = nullptr;
+        lv_obj_t* actor = nullptr;
         lv_obj_t* status = nullptr;
         lv_obj_t* workflow = nullptr;
         lv_obj_t* age = nullptr;
@@ -156,6 +157,7 @@ class GithubPlugin final : public dashboard::PluginBase {
         lv_obj_t* root = nullptr;
         lv_obj_t* number = nullptr;
         lv_obj_t* title = nullptr;
+        lv_obj_t* actor = nullptr;
         lv_obj_t* status = nullptr;
         lv_obj_t* age = nullptr;
     };

@@ -21,15 +21,22 @@ constexpr const char* kTag = "github";
 
 /// Column widths for the repository list. Fixed so the columns line up down the page, as on the
 /// Elizabeth board — the same reasoning, and the same reason not to flex them.
-constexpr int32_t kStatusColumn = 200;
-constexpr int32_t kWorkflowColumn = 260;
-constexpr int32_t kAgeColumn = 190;
+///
+/// Trimmed when the "who" column arrived: five fixed columns plus a flexible name have to fit
+/// 1280 px less the page gutters, the card padding and four gaps. Status and workflow gave up the
+/// width, because a truncated status word is unreadable but a truncated workflow name is still
+/// recognisable, and the repository name — the thing you look for first — keeps the remainder.
+constexpr int32_t kActorColumn = 165;
+constexpr int32_t kStatusColumn = 180;
+constexpr int32_t kWorkflowColumn = 200;
+constexpr int32_t kAgeColumn = 170;
 constexpr int32_t kRowHeight = 64;
 
 /// Drill-down columns.
-constexpr int32_t kRunNumberColumn = 110;
-constexpr int32_t kRunStatusColumn = 200;
-constexpr int32_t kRunAgeColumn = 190;
+constexpr int32_t kRunNumberColumn = 100;
+constexpr int32_t kRunActorColumn = 165;
+constexpr int32_t kRunStatusColumn = 180;
+constexpr int32_t kRunAgeColumn = 170;
 
 constexpr const char* kNoData = "--";
 
@@ -207,6 +214,12 @@ void GithubPlugin::buildListView(lv_obj_t* parent) {
         lv_obj_set_flex_grow(row.name, 1);
         lv_label_set_long_mode(row.name, LV_LABEL_LONG_DOT);
 
+        // Who pushed. Secondary rather than muted: it is the answer to a question people
+        // actually ask of a board like this, so it should not be the faintest thing on the row.
+        row.actor = theme::makeLabel(row.root, "", theme::fontBody(), theme::textSecondary());
+        lv_obj_set_width(row.actor, kActorColumn);
+        lv_label_set_long_mode(row.actor, LV_LABEL_LONG_DOT);
+
         row.status = theme::makeLabel(row.root, "", theme::fontBody(), theme::textMuted());
         lv_obj_set_width(row.status, kStatusColumn);
 
@@ -263,6 +276,10 @@ void GithubPlugin::buildDetailView(lv_obj_t* parent) {
         row.title = theme::makeLabel(row.root, "", theme::fontBody(), theme::textPrimary());
         lv_obj_set_flex_grow(row.title, 1);
         lv_label_set_long_mode(row.title, LV_LABEL_LONG_DOT);
+
+        row.actor = theme::makeLabel(row.root, "", theme::fontBody(), theme::textSecondary());
+        lv_obj_set_width(row.actor, kRunActorColumn);
+        lv_label_set_long_mode(row.actor, LV_LABEL_LONG_DOT);
 
         row.status = theme::makeLabel(row.root, "", theme::fontBody(), theme::textMuted());
         lv_obj_set_width(row.status, kRunStatusColumn);
@@ -457,8 +474,9 @@ esp_err_t GithubPlugin::refreshRepositories(RepoScope scope, bool primary) {
         }
         if (entry.run_state != RunState::None) {
             ++with_runs;
-            ESP_LOGI(kTag, "%s: %s (%s)", entry.full_name.c_str(),
+            ESP_LOGI(kTag, "%s: %s by %s (%s)", entry.full_name.c_str(),
                      runStateText(entry.run_state),
+                     entry.run_actor.empty() ? "unknown" : entry.run_actor.c_str(),
                      entry.run_workflow.empty() ? "unnamed workflow"
                                                 : entry.run_workflow.c_str());
         }
@@ -553,11 +571,15 @@ void GithubPlugin::renderList(const RepoList& repos, std::time_t now_utc) {
             lv_label_set_text(row.status, "Checking...");
             lv_obj_set_style_text_color(row.status, theme::textMuted(), LV_PART_MAIN);
             lv_label_set_text(row.workflow, "");
+            lv_label_set_text(row.actor, "");
         } else {
             lv_label_set_text(row.status, runStateText(repo.run_state));
             lv_obj_set_style_text_color(row.status, colourForRunState(repo.run_state),
                                         LV_PART_MAIN);
             lv_label_set_text(row.workflow, repo.run_workflow.c_str());
+            // Blank rather than a dash for a repository with no runs: there is genuinely nobody
+            // to attribute, and a dash in a "who" column invites the reader to wonder who.
+            lv_label_set_text(row.actor, repo.run_actor.c_str());
         }
 
         // The age shown is the last PUSH, not the last run: that is what "last worked on" means,
@@ -601,6 +623,8 @@ void GithubPlugin::renderDetail(const RunList& runs, std::time_t now_utc) {
 
         lv_label_set_text(row.title,
                           run.title.empty() ? run.workflow.c_str() : run.title.c_str());
+
+        lv_label_set_text(row.actor, run.actor.c_str());
 
         lv_label_set_text(row.status, runStateText(run.state));
         lv_obj_set_style_text_color(row.status, colourForRunState(run.state), LV_PART_MAIN);
@@ -657,8 +681,15 @@ void GithubPlugin::summarise(dashboard::PluginSummary& out) const {
     }
 
     out.primary.assign(runStateText(chosen->run_state));
-    char line[64];
-    std::snprintf(line, sizeof(line), "%s", chosen->name.c_str());
+    char line[96];
+    if (chosen->run_actor.empty()) {
+        std::snprintf(line, sizeof(line), "%s", chosen->name.c_str());
+    } else {
+        // Bullet, not an em dash: 0x2022 is in the glyph range and the dash is not — it would
+        // draw as an empty box. Same reason as the weather tile.
+        std::snprintf(line, sizeof(line), "%s \xE2\x80\xA2 %s", chosen->name.c_str(),
+                      chosen->run_actor.c_str());
+    }
     out.secondary.assign(line);
 
     switch (chosen->run_state) {
