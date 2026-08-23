@@ -483,6 +483,12 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
 
     if (findFormField(body, "display_flipped", text, sizeof(text)) && text[0] != '\0') {
         edited.display_flipped = (text[0] == '1' || text[0] == 't');
+        ESP_LOGI(kTag, "orientation field = '%s' -> flipped %s", text,
+                 edited.display_flipped ? "true" : "false");
+    } else {
+        // Worth saying loudly. If the page ever stops sending this field the orientation would
+        // silently stick at whatever was stored, which is indistinguishable from a broken flip.
+        ESP_LOGW(kTag, "no orientation field in the form; leaving it unchanged");
     }
 
     if (findFormField(body, "github_username", text, sizeof(text)) && text[0] != '\0') {

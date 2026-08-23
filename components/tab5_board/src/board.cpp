@@ -311,18 +311,45 @@ void Board::applyRotation() {
     }
     // 90 and 270 are the two landscape orientations — same shape, opposite way up. The panel is
     // physically portrait, so both are software rotations through esp_lvgl_port's sw_rotate path.
+    const lv_display_rotation_t wanted =
+        flipped_ ? LV_DISPLAY_ROTATION_270 : LV_DISPLAY_ROTATION_90;
+
     LvglLock lock;
-    bsp_display_rotate(display_,
-                       flipped_ ? LV_DISPLAY_ROTATION_270 : LV_DISPLAY_ROTATION_90);
+    bsp_display_rotate(display_, wanted);
+
+    // FORCE A FULL REDRAW. Rotating does not by itself repaint what is already on the panel:
+    // lv_display_set_rotation -> update_resolution() marks layouts dirty and invalidates the
+    // SYSTEM layer, but not the active screen. Between 90 and 270 the resolution is identical
+    // (1280x720 either way), so nothing about the layout changes and almost nothing redraws —
+    // the panel keeps displaying the previous frame in the previous orientation, and only the
+    // handful of labels that tick each second come back the new way up. That reads exactly like
+    // "the flip does not work".
+    //
+    // Invalidating both layers repaints everything at the new rotation in one refresh.
+    lv_obj_t* screen = lv_screen_active();
+    if (screen != nullptr) {
+        lv_obj_invalidate(screen);
+    }
+    lv_obj_invalidate(lv_layer_top());
+
+    ESP_LOGI(kTag, "rotation set to %d, display reports %d", static_cast<int>(wanted),
+             static_cast<int>(lv_display_get_rotation(display_)));
 }
 
 void Board::setDisplayFlipped(bool flipped) {
-    if (display_ == nullptr || flipped_ == flipped) {
+    if (display_ == nullptr) {
+        return;
+    }
+    if (flipped_ == flipped) {
+        // Logged rather than silent: this is the branch taken when a stored preference matches
+        // what is already on screen, and knowing it was reached is the difference between "the
+        // setting never arrived" and "the setting arrived and was already satisfied".
+        ESP_LOGD(kTag, "display already %s", flipped ? "flipped" : "normal");
         return;
     }
     flipped_ = flipped;
+    ESP_LOGI(kTag, "display %s", flipped ? "flipping 180 degrees" : "returning to normal");
     applyRotation();
-    ESP_LOGI(kTag, "display %s", flipped ? "flipped 180 degrees" : "returned to normal");
 }
 
 esp_err_t Board::init() {
