@@ -41,7 +41,7 @@ constexpr int32_t kMinDayBrightnessPercent = 10;
 
 struct Settings {
     /// Bump ONLY when an existing field changes meaning or name. Adding fields does not need it.
-    static constexpr uint32_t kCurrentSchema = 1;
+    static constexpr uint32_t kCurrentSchema = 2;
 
     uint32_t schema = kCurrentSchema;
 
@@ -96,11 +96,13 @@ struct Settings {
     UrlString claude_relay_url;
 
     // ---- pages -------------------------------------------------------------------------
-    ShortString default_page{"clock"};
+    ShortString default_page{"summary"};
     /// Comma-separated plugin ids. Empty means "all". Unknown ids are ignored on load, so a
     /// saved list from older firmware cannot hide a page that has since been added.
     FixedString<160> enabled_pages;
-    FixedString<160> page_order{"clock,weather,elizabeth,todos,claude"};
+    /// Raised from 160 when the seventh page landed: the schema-2 migration prepends "summary,"
+    /// and appends ",github" to whatever was stored, and 160 could not hold the result.
+    FixedString<224> page_order{"summary,clock,weather,elizabeth,todos,claude,github"};
 
     // ---- OTA ---------------------------------------------------------------------------
     ShortString ota_channel{"stable"};

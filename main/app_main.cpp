@@ -135,7 +135,9 @@ size_t splitCsv(const char* csv, char* scratch, size_t scratch_size, const char*
 /// Also registered as PageManager's configuration loader, so the Settings page can change the
 /// order and have it take effect without a restart.
 void applyPageConfiguration() {
-    char scratch[192];
+    // Must hold the whole stored order: splitCsv() copies into this before splitting in place,
+    // so anything smaller than Settings::page_order silently loses the last page in the list.
+    char scratch[256];
     const char* ids[dashboard::PageManager::kMaxPlugins];
     const size_t count = splitCsv(g_settings.page_order.c_str(), scratch, sizeof(scratch), ids,
                                   dashboard::PageManager::kMaxPlugins);

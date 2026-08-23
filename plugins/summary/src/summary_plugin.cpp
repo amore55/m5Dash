@@ -100,6 +100,11 @@ void SummaryPlugin::buildTile(lv_obj_t* parent, Tile& tile) {
     lv_obj_set_height(tile.card, LV_PCT(100));
     lv_obj_set_flex_flow(tile.card, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(tile.card, theme::kGapS, LV_PART_MAIN);
+    // SPACE_BETWEEN, not START: the tile is taller than its three lines, and stacking them at
+    // the top leaves the dead space at the bottom that made the first version look unfinished.
+    // This pins the title to the top and the qualifier to the bottom, with the value centred.
+    lv_obj_set_flex_align(tile.card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START);
 
     // The plugin pointer rides on the widget rather than the Tile, so the click handler needs
     // nothing but the event — no index arithmetic that could drift out of step with the array.
@@ -121,15 +126,20 @@ void SummaryPlugin::buildTile(lv_obj_t* parent, Tile& tile) {
     lv_obj_t* title_row = theme::makeRow(tile.card);
     lv_obj_set_style_pad_column(title_row, theme::kGapS, LV_PART_MAIN);
     tile.dot = theme::makeStatusDot(title_row);
-    tile.title = theme::makeLabel(title_row, tile.plugin->title(), theme::fontLabel(),
-                                  theme::textMuted());
+    // fontBody, up one step from fontLabel: the tile title is what you read to know WHICH box
+    // you are looking at, so it should not be the smallest thing on it.
+    tile.title = theme::makeLabel(title_row, tile.plugin->title(), theme::fontBody(),
+                                  theme::textSecondary());
     lv_obj_set_flex_grow(tile.title, 1);
     lv_label_set_long_mode(tile.title, LV_LABEL_LONG_DOT);
 
-    // The value, and the qualifier under it. fontDisplay for the headline: this is the number
-    // the page exists to show, and the tile is read from further away than the page is.
-    tile.primary = theme::makeLabel(tile.card, kNoData, theme::fontDisplay(),
-                                    theme::textPrimary());
+    // fontHero, the largest available, for the one number the page exists to show — the tile is
+    // read from further away than the page is, and it had space going spare.
+    //
+    // NOT applyHeroScale on top: an LVGL transform does not change the laid-out size, so a
+    // scaled label would overflow its tile and collide with its neighbours instead of being
+    // clipped. Growing the font is the version that respects the layout.
+    tile.primary = theme::makeLabel(tile.card, kNoData, theme::fontHero(), theme::textPrimary());
     lv_obj_set_width(tile.primary, LV_PCT(100));
     lv_label_set_long_mode(tile.primary, LV_LABEL_LONG_DOT);
 
