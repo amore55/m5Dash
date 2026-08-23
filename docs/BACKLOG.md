@@ -25,7 +25,7 @@ clean and every commit was verified on hardware before it was made.
 | Time | SNTP syncs and writes back to the RX8130CE; clock shows real local time |
 | **Weather** | **Live Open-Meteo forecast for the configured location, cached across reboots** |
 | **Elizabeth line** | **Live status (worst-of), plus a 5-train board with per-train delay/cancellation, turning round at midday** |
-| Settings site | `http://deskdashboard.local` (or its current DHCP address — it moved from 192.168.2.182 to 192.168.1.189 once already, so read the boot log rather than assuming) — weather location, timezone, clock face, PIN |
+| Settings site | **`http://deskdashboard.local`** — weather location, timezone, clock face, PIN, screen brightness. Always reach it by name, never by IP: the DHCP address has already moved twice (192.168.2.182 → 192.168.1.189) and any IP written down goes stale. If the name ever fails, that is an mDNS fault worth fixing, not a reason to look up the address. |
 | Header | Always-visible signal icon, far right |
 
 The settings site is **confirmed working from a browser** — the owner set a PIN through it and
