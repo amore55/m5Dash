@@ -32,11 +32,23 @@ enum class Secret : uint8_t {
     ClaudeCredential,  ///< Session cookie or key. See docs/CLAUDE_USAGE.md.
     TflAppKey,         ///< Optional; TfL works unauthenticated at low rates.
 
-    /// GitHub personal access token. Strictly optional, and the GitHub page is close to useless
-    /// without it: unauthenticated the API shows only PUBLIC repos owned by the user and allows
-    /// 60 requests an hour, where one refresh of ten repos costs eleven. A token lifts that to
-    /// 5000/hr and is the only way to see private or organisation repositories at all.
+    /// GitHub token for the user's OWN repositories.
+    ///
+    /// Strictly optional, and the GitHub page is thin without it: unauthenticated the API shows
+    /// only PUBLIC repos and allows 60 requests an hour, where one refresh costs seven. A token
+    /// lifts that to 5000/hr and is the only way to see private repositories at all.
     GithubToken,
+
+    /// GitHub token for WORK repositories, kept separate on purpose.
+    ///
+    /// A fine-grained token has exactly ONE resource owner: a token owned by a personal account
+    /// cannot see organisation repositories however its permissions are set. So covering both
+    /// needs either one CLASSIC token — whose narrowest private-repo scope is `repo`, meaning
+    /// read AND WRITE on every repository including the employer's — or two fine-grained ones.
+    ///
+    /// Two is the safer arrangement and is why this exists: each token grants read-only access to
+    /// one owner's repositories, and neither can write anything.
+    GithubWorkToken,
 
     /// api-ninjas key for the clock page's quote. REQUIRED for that feature — the endpoint
     /// answers `{"error": "Missing API Key."}` with no key, so there is no free anonymous tier

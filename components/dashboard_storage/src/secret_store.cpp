@@ -20,6 +20,7 @@ constexpr const char* kKeyTelegramToken = "tg_token";
 constexpr const char* kKeyClaudeCred = "claude_cred";
 constexpr const char* kKeyTflAppKey = "tfl_key";
 constexpr const char* kKeyGithubToken = "gh_token";
+constexpr const char* kKeyGithubWorkToken = "gh_wtoken";
 constexpr const char* kKeyQuoteApiKey = "quote_key";
 constexpr const char* kKeyPinHash = "pin_hash";
 constexpr const char* kKeyPinSalt = "pin_salt";
@@ -39,6 +40,8 @@ const char* keyFor(Secret secret) {
             return kKeyTflAppKey;
         case Secret::GithubToken:
             return kKeyGithubToken;
+        case Secret::GithubWorkToken:
+            return kKeyGithubWorkToken;
         case Secret::QuoteApiKey:
             return kKeyQuoteApiKey;
     }

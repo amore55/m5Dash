@@ -122,17 +122,41 @@
       <input id="github_username" type="text" autocapitalize="off" spellcheck="false"
              placeholder="amore55">
 
-      <label for="github_token">Personal access token</label>
+      <label for="github_token">My repos &mdash; token</label>
       <input id="github_token" type="password" autocomplete="off" spellcheck="false"
              placeholder="leave blank to keep the stored token">
       <p class="note" id="github_token_note"></p>
       <label class="inline"><input id="github_token_clear" type="checkbox"> Remove the stored
         token</label>
       <p class="note">
-        Optional, but the page shows very little without one: unauthenticated the GitHub API
-        returns only public repositories and allows 60 requests an hour, where one refresh costs
-        eleven. A token also enables private and organisation repositories, and the
-        "All repositories" filter. A fine-grained token needs read access to Contents and Actions.
+        A fine-grained token with <strong>your own account</strong> as the resource owner. Needs
+        read access to Metadata, Contents and Actions. Without one, only public repositories show
+        and the rate limit is 60 requests an hour rather than 5000.
+      </p>
+
+      <label for="github_work_token">Work repos &mdash; token</label>
+      <input id="github_work_token" type="password" autocomplete="off" spellcheck="false"
+             placeholder="leave blank to keep the stored token">
+      <p class="note" id="github_work_token_note"></p>
+      <label class="inline"><input id="github_work_token_clear" type="checkbox"> Remove the stored
+        token</label>
+      <p class="note">
+        A <strong>second</strong> fine-grained token, with your <strong>organisation</strong> as
+        the resource owner. Two tokens are needed because a fine-grained token has exactly one
+        resource owner &mdash; one owned by your personal account cannot see organisation
+        repositories however its permissions are set. The alternative, a single classic token,
+        would need the <code>repo</code> scope, which grants read <em>and write</em> on every
+        repository you can reach; two read-only tokens are the safer arrangement.
+      </p>
+
+      <label for="github_organisation">Work organisation</label>
+      <input id="github_organisation" type="text" autocapitalize="off" spellcheck="false"
+             placeholder="your-org">
+      <p class="note">
+        The organisation the work token belongs to. Strongly recommended: with it, work
+        repositories are read straight from that organisation. Left empty, the page has to ask
+        GitHub which organisations you belong to, which an organisation-scoped token often cannot
+        answer &mdash; and the Work list then comes back empty.
       </p>
 
       <h2>Quote of the day</h2>
@@ -262,12 +286,16 @@
 
     $('display_flipped').value = s.display_flipped ? '1' : '0';
     $('github_username').value = s.github_username || '';
+    $('github_organisation').value = s.github_organisation || '';
 
     // The secret fields stay EMPTY on purpose — the device never sends a stored secret back, so
     // there is nothing to prefill. These notes are the only feedback that one is held.
     $('github_token_note').textContent = s.has_github_token
       ? 'A token is stored. Type a new one to replace it.'
       : 'No token stored — only public repositories will be listed.';
+    $('github_work_token_note').textContent = s.has_github_work_token
+      ? 'A work token is stored. Type a new one to replace it.'
+      : 'No work token stored — the Work filter will be empty.';
     $('quote_key_note').textContent = s.has_quote_api_key
       ? 'A key is stored. Type a new one to replace it.'
       : 'No key stored — the quote will not appear.';
@@ -340,6 +368,10 @@
     if ($('github_token_clear').checked) { fields.github_token = ''; }
     else if (token) { fields.github_token = token; }
 
+    var work = $('github_work_token').value;
+    if ($('github_work_token_clear').checked) { fields.github_work_token = ''; }
+    else if (work) { fields.github_work_token = work; }
+
     var key = $('quote_api_key').value;
     if ($('quote_key_clear').checked) { fields.quote_api_key = ''; }
     else if (key) { fields.quote_api_key = key; }
@@ -363,13 +395,16 @@
       dim_start: $('dim_start').value,
       dim_end: $('dim_end').value,
       display_flipped: $('display_flipped').value,
-      github_username: $('github_username').value
+      github_username: $('github_username').value,
+      github_organisation: $('github_organisation').value
     })).then(function () {
       Dash.say('Saved.', 'ok');
       // Never leave a typed secret sitting in the DOM after it has been stored.
       $('github_token').value = '';
+      $('github_work_token').value = '';
       $('quote_api_key').value = '';
       $('github_token_clear').checked = false;
+      $('github_work_token_clear').checked = false;
       $('quote_key_clear').checked = false;
       $('go').disabled = false;
       load();

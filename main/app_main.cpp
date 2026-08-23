@@ -183,7 +183,8 @@ void applySettings(tab5::Board& board) {
                                   g_settings.commute_evening_start_minutes,
                                   g_settings.commute_evening_end_minutes);
 
-    g_github.setAccount(g_settings.github_username.c_str(), g_settings.github_all_repositories);
+    g_github.setAccount(g_settings.github_username.c_str(),
+                        g_settings.github_organisation.c_str(), g_settings.github_show_work);
 }
 
 /// Last value seen from the gesture detector, so a touch is acted on once per press-poll.

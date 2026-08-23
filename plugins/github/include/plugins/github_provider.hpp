@@ -27,6 +27,16 @@
 
 namespace plugins {
 
+/// Which of the two lists — and therefore which of the two tokens — a request is for.
+///
+/// Kept separate because a fine-grained token has exactly ONE resource owner: the personal token
+/// physically cannot see organisation repositories and the work token cannot see personal ones,
+/// so there is no single request that answers both.
+enum class RepoScope : uint8_t {
+    Mine,
+    Work,
+};
+
 class GithubProvider {
   public:
     /// Ceiling for a repository list. Measured: ten repositories is 61,650 bytes, so this is a
@@ -37,35 +47,44 @@ class GithubProvider {
     /// exclude_pull_requests, because every run embeds its whole repository and head commit.
     static constexpr size_t kRunsResponseBytes = 112 * 1024;
 
-    /// True when a personal access token is stored.
-    static bool authenticated();
+    /// True when a token is stored for that scope.
+    static bool authenticated(RepoScope scope);
 
-    /// The repository list. Worker thread.
+    /// The repository list for one scope. Worker thread.
     ///
-    /// `all_repositories` only means anything with a token: it selects /user/repos, which covers
-    /// everything the token can see. Without a token it is ignored and /users/{username}/repos is
-    /// used, because there is no way to ask for someone else's private or org repositories.
-    esp_err_t fetchRepos(const char* username, bool all_repositories, char* buffer, size_t capacity,
-                         RepoList& out);
+    /// Mine, with a token:      /user/repos?affiliation=owner
+    /// Mine, without:           /users/{username}/repos      (public repositories only)
+    /// Work, with `organisation`:  /orgs/{organisation}/repos
+    /// Work, without:           /user/repos?affiliation=organization_member
+    ///
+    /// The organisation form is preferred for work because it is the reliable route for a
+    /// fine-grained token owned by that organisation; the affiliation form needs the token to be
+    /// able to enumerate the user's organisations and can legitimately return nothing.
+    esp_err_t fetchRepos(RepoScope scope, const char* username, const char* organisation,
+                         char* buffer, size_t capacity, RepoList& out);
 
     /// The latest run for one repository, written into `entry`. Worker thread.
     ///
+    /// `scope` selects the token: a repository found through the work token must be queried with
+    /// it, because the personal token cannot see it at all.
+    ///
     /// A repository with no workflows sets RunState::None and returns ESP_OK — that is an answer,
     /// not a failure.
-    esp_err_t fetchLatestRun(const char* full_name, char* buffer, size_t capacity,
+    esp_err_t fetchLatestRun(RepoScope scope, const char* full_name, char* buffer, size_t capacity,
                              RepoEntry& entry);
 
     /// The last few runs for one repository, for the drill-down. Worker thread.
-    esp_err_t fetchRuns(const char* full_name, char* buffer, size_t capacity, RunList& out);
+    esp_err_t fetchRuns(RepoScope scope, const char* full_name, char* buffer, size_t capacity,
+                        RunList& out);
 
     /// Short, user-facing reason for the last failure. Never contains a URL or a token.
     const char* lastError() const { return last_error_; }
 
   private:
-    /// Perform a GET against api.github.com with the standard headers, and the stored token when
-    /// there is one. Copies the token onto the stack for the duration of the call and wipes it.
-    esp_err_t get(const char* url, const char* safe_label, char* buffer, size_t capacity,
-                  size_t& length);
+    /// Perform a GET against api.github.com with the standard headers, and that scope's stored
+    /// token when there is one. Copies the token onto the stack for the call and wipes it after.
+    esp_err_t get(RepoScope scope, const char* url, const char* safe_label, char* buffer,
+                  size_t capacity, size_t& length);
 
     dashboard::net::HttpsClient http_;
     const char* last_error_ = "";

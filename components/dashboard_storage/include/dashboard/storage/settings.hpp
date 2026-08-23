@@ -104,9 +104,21 @@ struct Settings {
     /// filter. Not a secret — it appears in a URL. The token is in SecretStore.
     ShortString github_username{"amore55"};
 
-    /// Show every repository the token can see, or only those owned by github_username.
+    /// Which of the two lists the page is showing: work repositories, or the user's own.
     /// Toggled from the page itself, and persisted so the choice survives a restart.
-    bool github_all_repositories = false;
+    ///
+    /// Replaced an earlier `github_all_repositories`, whose NVS key ("gh_all") is now unused and
+    /// left behind deliberately — reusing a key whose MEANING changed is exactly what schema
+    /// migrations exist to prevent, and abandoning one costs nothing.
+    bool github_show_work = false;
+
+    /// Organisation whose repositories the WORK token covers. Optional.
+    ///
+    /// When set, work repositories are fetched from /orgs/{this}/repos, which is the reliable
+    /// route for a fine-grained token owned by that organisation. When empty the page falls back
+    /// to /user/repos?affiliation=organization_member, which depends on the token being able to
+    /// enumerate the user's organisations and may therefore come back empty.
+    ShortString github_organisation;
 
     // ---- pages -------------------------------------------------------------------------
     ShortString default_page{"summary"};

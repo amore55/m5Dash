@@ -63,14 +63,22 @@ uint32_t GithubPlugin::refreshIntervalMs() const {
     return dash::cfg::kGithubRefreshMs;
 }
 
-void GithubPlugin::setAccount(const char* username, bool all_repositories) {
+void GithubPlugin::setAccount(const char* username, const char* organisation, bool show_work) {
     bool changed = false;
-    if (username != nullptr && username[0] != '\0' && !username_.equals(username)) {
-        username_.assign(username);
-        changed = true;
+    {
+        std::lock_guard<std::mutex> lock(modelMutex());
+        if (username != nullptr && username[0] != '\0' && !username_.equals(username)) {
+            username_.assign(username);
+            changed = true;
+        }
+        // Unlike the username, an EMPTY organisation is meaningful — it selects the affiliation
+        // fallback — so this accepts a clear as a change.
+        if (organisation != nullptr && !organisation_.equals(organisation)) {
+            organisation_.assign(organisation);
+            changed = true;
+        }
     }
-    if (all_repositories_.exchange(all_repositories, std::memory_order_relaxed) !=
-        all_repositories) {
+    if (show_work_.exchange(show_work, std::memory_order_relaxed) != show_work) {
         changed = true;
     }
     if (changed) {
@@ -80,11 +88,17 @@ void GithubPlugin::setAccount(const char* username, bool all_repositories) {
 }
 
 esp_err_t GithubPlugin::onInitialise() {
-    if (!GithubProvider::authenticated()) {
-        ESP_LOGW(kTag, "no token stored: public repositories only, 60 requests/hour");
+    if (!GithubProvider::authenticated(RepoScope::Mine)) {
+        ESP_LOGW(kTag, "no personal token: public repositories only, 60 requests/hour");
+    }
+    if (!GithubProvider::authenticated(RepoScope::Work)) {
+        ESP_LOGW(kTag, "no work token: the Work filter will be empty");
     }
     return ESP_OK;
 }
+
+RepoList& GithubPlugin::activeList() { return showingWork() ? work_ : mine_; }
+const RepoList& GithubPlugin::activeList() const { return showingWork() ? work_ : mine_; }
 
 // ---------------------------------------------------------------------------------------
 // Layout
@@ -111,23 +125,26 @@ void GithubPlugin::buildListView(lv_obj_t* parent) {
     lv_obj_set_height(filters, LV_SIZE_CONTENT);
     lv_obj_set_style_pad_column(filters, theme::kGapS, LV_PART_MAIN);
 
-    all_button_ = theme::makeButton(filters, "All repositories");
-    lv_obj_add_event_cb(
-        all_button_,
-        [](lv_event_t* event) {
-            auto* self = static_cast<GithubPlugin*>(lv_event_get_user_data(event));
-            self->setAccount(nullptr, /*all_repositories=*/true);
-            self->updateFilterButtons();
-        },
-        LV_EVENT_CLICKED, this);
-
-    mine_button_ = theme::makeButton(filters, "My repositories");
+    mine_button_ = theme::makeButton(filters, "My repos");
     lv_obj_add_event_cb(
         mine_button_,
         [](lv_event_t* event) {
             auto* self = static_cast<GithubPlugin*>(lv_event_get_user_data(event));
-            self->setAccount(nullptr, /*all_repositories=*/false);
+            // nullptr for username and organisation means "unchanged" — only the filter moves.
+            self->setAccount(nullptr, nullptr, /*show_work=*/false);
             self->updateFilterButtons();
+            self->markDirty();  // show the cached other list at once
+        },
+        LV_EVENT_CLICKED, this);
+
+    work_button_ = theme::makeButton(filters, "Work repos");
+    lv_obj_add_event_cb(
+        work_button_,
+        [](lv_event_t* event) {
+            auto* self = static_cast<GithubPlugin*>(lv_event_get_user_data(event));
+            self->setAccount(nullptr, nullptr, /*show_work=*/true);
+            self->updateFilterButtons();
+            self->markDirty();
         },
         LV_EVENT_CLICKED, this);
     updateFilterButtons();
@@ -237,9 +254,9 @@ void GithubPlugin::buildDetailView(lv_obj_t* parent) {
 }
 
 void GithubPlugin::updateFilterButtons() {
-    const bool all = allRepositories();
-    theme::setButtonSelected(all_button_, all);
-    theme::setButtonSelected(mine_button_, !all);
+    const bool work = showingWork();
+    theme::setButtonSelected(work_button_, work);
+    theme::setButtonSelected(mine_button_, !work);
 }
 
 void GithubPlugin::showList() {
@@ -257,6 +274,9 @@ void GithubPlugin::showDetail(size_t row_index) {
     }
 
     detail_full_name_ = rows_[row_index].full_name;
+    // Remember which token found this repository: the drill-down must use the same one, because
+    // the personal token cannot see a work repository and vice versa.
+    detail_scope_ = showingWork() ? RepoScope::Work : RepoScope::Mine;
     lv_label_set_text(detail_title_, detail_full_name_.c_str());
 
     // Clear whatever the previous repository left behind, so there is never a moment where one
@@ -293,14 +313,16 @@ esp_err_t GithubPlugin::fetch(bool force) {
     if (detail_pending_.exchange(false, std::memory_order_relaxed)) {
         return refreshDetail();
     }
-    return refreshRepositories();
+    return refreshRepositories(showingWork() ? RepoScope::Work : RepoScope::Mine);
 }
 
 esp_err_t GithubPlugin::refreshDetail() {
     dashboard::MediumString target;
+    RepoScope scope = RepoScope::Mine;
     {
         std::lock_guard<std::mutex> lock(modelMutex());
         target = detail_full_name_;
+        scope = detail_scope_;
     }
     if (target.empty()) {
         return ESP_OK;
@@ -314,7 +336,7 @@ esp_err_t GithubPlugin::refreshDetail() {
 
     RunList runs;
     const esp_err_t err =
-        provider_.fetchRuns(target.c_str(), buffer.data(), buffer.capacity(), runs);
+        provider_.fetchRuns(scope, target.c_str(), buffer.data(), buffer.capacity(), runs);
     if (err != ESP_OK) {
         setError(provider_.lastError());
         return err;
@@ -328,14 +350,15 @@ esp_err_t GithubPlugin::refreshDetail() {
     return ESP_OK;
 }
 
-esp_err_t GithubPlugin::refreshRepositories() {
-    const bool all = all_repositories_.load(std::memory_order_relaxed);
+esp_err_t GithubPlugin::refreshRepositories(RepoScope scope) {
     account_changed_.store(false, std::memory_order_relaxed);
 
     dashboard::ShortString username;
+    dashboard::ShortString organisation;
     {
         std::lock_guard<std::mutex> lock(modelMutex());
         username = username_;
+        organisation = organisation_;
     }
 
     RepoList repos;
@@ -345,8 +368,8 @@ esp_err_t GithubPlugin::refreshRepositories() {
             setError("out of memory");
             return ESP_ERR_NO_MEM;
         }
-        const esp_err_t err = provider_.fetchRepos(username.c_str(), all, buffer.data(),
-                                                   buffer.capacity(), repos);
+        const esp_err_t err = provider_.fetchRepos(scope, username.c_str(), organisation.c_str(),
+                                                   buffer.data(), buffer.capacity(), repos);
         if (err != ESP_OK) {
             setError(provider_.lastError());
             return err;
@@ -355,10 +378,10 @@ esp_err_t GithubPlugin::refreshRepositories() {
 
     // PUBLISH THE LIST NOW, before any run states. This is the whole reason the page feels
     // responsive: the names and push times are already useful, and the statuses take another
-    // ten requests to arrive.
+    // six requests to arrive.
     {
         std::lock_guard<std::mutex> lock(modelMutex());
-        repos_ = repos;
+        (scope == RepoScope::Work ? work_ : mine_) = repos;
     }
     markDirty();
 
@@ -381,8 +404,8 @@ esp_err_t GithubPlugin::refreshRepositories() {
         }
 
         RepoEntry entry = repos.repos[i];
-        if (provider_.fetchLatestRun(entry.full_name.c_str(), buffer.data(), buffer.capacity(),
-                                     entry) != ESP_OK) {
+        if (provider_.fetchLatestRun(scope, entry.full_name.c_str(), buffer.data(),
+                                     buffer.capacity(), entry) != ESP_OK) {
             ++failures;
             continue;  // leave run_known false: the row keeps saying "checking"
         }
@@ -396,10 +419,13 @@ esp_err_t GithubPlugin::refreshRepositories() {
 
         std::lock_guard<std::mutex> lock(modelMutex());
         // Match by name, not by index: the list could have been replaced under us by a forced
-        // refresh, and writing to slot i would then label the wrong repository.
-        for (size_t j = 0; j < repos_.count; ++j) {
-            if (repos_.repos[j].full_name == entry.full_name) {
-                repos_.repos[j] = entry;
+        // refresh, and writing to slot i would then label the wrong repository. Also written into
+        // the list for THIS scope, not the visible one — the user may have switched filters while
+        // these requests were in flight.
+        RepoList& target = (scope == RepoScope::Work) ? work_ : mine_;
+        for (size_t j = 0; j < target.count; ++j) {
+            if (target.repos[j].full_name == entry.full_name) {
+                target.repos[j] = entry;
                 break;
             }
         }
@@ -427,7 +453,7 @@ void GithubPlugin::updateUi() {
     RunList runs;
     {
         std::lock_guard<std::mutex> lock(modelMutex());
-        repos = repos_;
+        repos = activeList();
         runs = detail_runs_;
     }
 
@@ -443,11 +469,20 @@ void GithubPlugin::renderList(const RepoList& repos, std::time_t now_utc) {
     }
 
     if (repos.valid && repos.count == 0) {
-        lv_label_set_text(list_empty_,
-                          GithubProvider::authenticated()
-                              ? "No repositories found for this account."
-                              : "No public repositories. Add a token in settings to see private "
-                                "and organisation repositories.");
+        // Three different empty states with three different fixes, so they say different things.
+        const bool work = showingWork();
+        const char* message;
+        if (work && !GithubProvider::authenticated(RepoScope::Work)) {
+            message = "No work token stored. Add one in settings.";
+        } else if (work) {
+            message = "No repositories visible to the work token. Check the organisation name in "
+                      "settings, and that the token is owned by that organisation.";
+        } else if (!GithubProvider::authenticated(RepoScope::Mine)) {
+            message = "No public repositories. Add a token in settings to see private ones.";
+        } else {
+            message = "No repositories found for this account.";
+        }
+        lv_label_set_text(list_empty_, message);
         lv_obj_remove_flag(list_empty_, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(list_empty_, LV_OBJ_FLAG_HIDDEN);
@@ -534,13 +569,17 @@ void GithubPlugin::summarise(dashboard::PluginSummary& out) const {
     RepoList repos;
     {
         std::lock_guard<std::mutex> lock(modelMutex());
-        repos = repos_;
+        // The tile follows the page's own filter, so the two never disagree about which set of
+        // repositories "GitHub" currently means.
+        repos = activeList();
     }
 
     if (!repos.valid || repos.count == 0) {
         out.primary.assign(kNoData);
-        out.secondary.assign(GithubProvider::authenticated() ? "No repositories"
-                                                             : "Add a token in settings");
+        out.secondary.assign(GithubProvider::authenticated(showingWork() ? RepoScope::Work
+                                                                        : RepoScope::Mine)
+                                 ? "No repositories"
+                                 : "Add a token in settings");
         return;
     }
 

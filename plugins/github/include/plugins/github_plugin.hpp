@@ -35,12 +35,12 @@ class GithubPlugin final : public dashboard::PluginBase {
 
     uint32_t refreshIntervalMs() const override;
 
-    /// Whose repositories to show, and whether to show everything the token can see.
+    /// Whose repositories to show, which organisation counts as work, and which list is up.
     /// Applied live from Settings; a change refetches.
-    void setAccount(const char* username, bool all_repositories);
+    void setAccount(const char* username, const char* organisation, bool show_work);
 
-    /// True when the user has asked for all repositories rather than only their own.
-    bool allRepositories() const { return all_repositories_.load(std::memory_order_relaxed); }
+    /// True when the WORK list is showing rather than the user's own.
+    bool showingWork() const { return show_work_.load(std::memory_order_relaxed); }
 
     /// The most recent run across the listed repositories, for the summary tile.
     void summarise(dashboard::PluginSummary& out) const override;
@@ -72,17 +72,31 @@ class GithubPlugin final : public dashboard::PluginBase {
     void updateFilterButtons();
 
     // ---- data ---------------------------------------------------------------------------
-    /// Fetch the repository list, then each repository's latest run, publishing as it goes.
-    esp_err_t refreshRepositories();
+    /// Fetch the repository list for `scope`, then each repository's latest run, publishing as
+    /// it goes.
+    esp_err_t refreshRepositories(RepoScope scope);
 
     /// Fetch the runs for whichever repository the drill-down is showing.
     esp_err_t refreshDetail();
 
+    /// The list for the scope currently on screen. Caller must hold modelMutex().
+    RepoList& activeList();
+    const RepoList& activeList() const;
+
     GithubProvider provider_;
 
     /// Guarded by modelMutex().
-    RepoList repos_;
+    ///
+    /// BOTH lists are kept, not just the visible one, so pressing the other filter shows
+    /// something immediately instead of twelve seconds of nothing. The newly-selected list is
+    /// refetched behind whatever was cached.
+    RepoList mine_;
+    RepoList work_;
     RunList detail_runs_;
+
+    /// Which scope the drill-down belongs to, so its runs are fetched with the right token — the
+    /// personal token cannot see a work repository at all.
+    RepoScope detail_scope_ = RepoScope::Mine;
 
     /// Which repository the drill-down is for. Set on the LVGL thread by a row press, read on
     /// the worker. A FixedString rather than an index because the list can be refetched and
@@ -91,7 +105,8 @@ class GithubPlugin final : public dashboard::PluginBase {
     std::atomic<bool> detail_pending_{false};
 
     dashboard::ShortString username_{"amore55"};
-    std::atomic<bool> all_repositories_{false};
+    dashboard::ShortString organisation_;
+    std::atomic<bool> show_work_{false};
 
     /// Set when setAccount() changes something, so fetch() knows to discard what it holds
     /// rather than merging new repositories into an old list.
@@ -101,7 +116,7 @@ class GithubPlugin final : public dashboard::PluginBase {
     lv_obj_t* list_view_ = nullptr;
     lv_obj_t* detail_view_ = nullptr;
 
-    lv_obj_t* all_button_ = nullptr;
+    lv_obj_t* work_button_ = nullptr;
     lv_obj_t* mine_button_ = nullptr;
     lv_obj_t* list_empty_ = nullptr;
 

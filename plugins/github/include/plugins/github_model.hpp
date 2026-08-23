@@ -101,9 +101,12 @@ struct RepoEntry {
 };
 
 struct RepoList {
-    /// Ten, as asked for. Also a rate-limit decision: one refresh costs 1 + count requests, and
-    /// unauthenticated GitHub allows 60 an hour.
-    static constexpr size_t kMaxRepos = 10;
+    /// Six, as asked for -- per list, and there are two lists (mine and work).
+    ///
+    /// Also a rate-limit decision: one refresh costs 1 + count requests, so six is seven
+    /// requests and about twelve seconds of serialised TLS. Unauthenticated GitHub allows 60 an
+    /// hour, which ten would have eaten through in five refreshes.
+    static constexpr size_t kMaxRepos = 6;
 
     RepoEntry repos[kMaxRepos];
     size_t count = 0;

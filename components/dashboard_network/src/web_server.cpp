@@ -404,12 +404,16 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     // -Werror=format-truncation reasons about every %s being full and every %f being a 300-digit
     // double, not about a place name and a latitude.
     char github_user[3 * 32];
+    char github_org[3 * 32];
     jsonEscape(s.github_username.c_str(), github_user, sizeof(github_user));
+    jsonEscape(s.github_organisation.c_str(), github_org, sizeof(github_org));
 
     // PRESENCE, never content. has_* is what lets the page render "a token is stored — type a
     // new one to replace it" without the token ever leaving the device.
     const bool has_github_token =
         dashboard::storage::SecretStore::has(dashboard::storage::Secret::GithubToken);
+    const bool has_github_work_token =
+        dashboard::storage::SecretStore::has(dashboard::storage::Secret::GithubWorkToken);
     const bool has_quote_key =
         dashboard::storage::SecretStore::has(dashboard::storage::Secret::QuoteApiKey);
 
@@ -420,14 +424,17 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   "\"brightness\":%ld,\"night_brightness\":%ld,"
                   "\"dim_start\":\"%s\",\"dim_end\":\"%s\",\"min_brightness\":%ld,"
                   "\"display_flipped\":%s,"
-                  "\"github_username\":\"%s\",\"has_github_token\":%s,"
+                  "\"github_username\":\"%s\",\"github_organisation\":\"%s\","
+                  "\"has_github_token\":%s,\"has_github_work_token\":%s,"
                   "\"has_quote_api_key\":%s}",
                   label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
                   static_cast<long>(s.brightness_percent),
                   static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
                   static_cast<long>(dashboard::storage::kMinDayBrightnessPercent),
-                  s.display_flipped ? "true" : "false", github_user,
-                  has_github_token ? "true" : "false", has_quote_key ? "true" : "false");
+                  s.display_flipped ? "true" : "false", github_user, github_org,
+                  has_github_token ? "true" : "false",
+                  has_github_work_token ? "true" : "false",
+                  has_quote_key ? "true" : "false");
     return httpd_resp_sendstr(req, body);
 }
 
@@ -481,6 +488,11 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
     if (findFormField(body, "github_username", text, sizeof(text)) && text[0] != '\0') {
         edited.github_username.assign(text);
     }
+    // Accepts an EMPTY value, unlike the username: clearing the organisation is a meaningful
+    // choice that selects the affiliation-based fallback.
+    if (findFormField(body, "github_organisation", text, sizeof(text))) {
+        edited.github_organisation.assign(text);
+    }
 
     // SECRETS ARE WRITE-ONLY FROM HERE. They go straight to SecretStore and are never read back
     // into `edited`, never returned by the GET handler and never logged — the page shows only
@@ -493,6 +505,14 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
         const esp_err_t stored =
             dashboard::storage::SecretStore::set(dashboard::storage::Secret::GithubToken, secret);
         ESP_LOGI(kTag, "GitHub token %s from the web page",
+                 secret[0] == '\0' ? "cleared" : (stored == ESP_OK ? "stored" : "REJECTED"));
+        secrets_changed = secrets_changed || stored == ESP_OK;
+    }
+    secureZero(secret, sizeof(secret));
+    if (findFormField(body, "github_work_token", secret, sizeof(secret))) {
+        const esp_err_t stored = dashboard::storage::SecretStore::set(
+            dashboard::storage::Secret::GithubWorkToken, secret);
+        ESP_LOGI(kTag, "GitHub work token %s from the web page",
                  secret[0] == '\0' ? "cleared" : (stored == ESP_OK ? "stored" : "REJECTED"));
         secrets_changed = secrets_changed || stored == ESP_OK;
     }
