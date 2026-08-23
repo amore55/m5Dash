@@ -21,6 +21,7 @@
 #pragma once
 
 #include <atomic>
+#include <functional>
 #include <cstddef>
 
 #include "dashboard/plugin_base.hpp"
@@ -41,6 +42,16 @@ class GithubPlugin final : public dashboard::PluginBase {
 
     /// True when the WORK list is showing rather than the user's own.
     bool showingWork() const { return show_work_.load(std::memory_order_relaxed); }
+
+    /// Called when the filter is changed FROM THE PAGE, so the choice can be written to settings
+    /// and survive a restart.
+    ///
+    /// A callback rather than this plugin writing settings itself: the filter lives in two places
+    /// (a button here, a stored value there) and only the application knows how to persist one.
+    /// Without it the buttons worked and the choice silently reverted on every boot.
+    void setFilterPersister(std::function<void(bool show_work)> persist) {
+        persist_filter_ = std::move(persist);
+    }
 
     /// The most recent run across the listed repositories, for the summary tile.
     void summarise(dashboard::PluginSummary& out) const override;
@@ -74,7 +85,11 @@ class GithubPlugin final : public dashboard::PluginBase {
     // ---- data ---------------------------------------------------------------------------
     /// Fetch the repository list for `scope`, then each repository's latest run, publishing as
     /// it goes.
-    esp_err_t refreshRepositories(RepoScope scope);
+    ///
+    /// `primary` distinguishes the list the user is looking at from the one being warmed behind
+    /// it. Only a primary failure reaches the footer: reporting "no work token stored" on a page
+    /// showing personal repositories would be an error about something nobody asked for.
+    esp_err_t refreshRepositories(RepoScope scope, bool primary);
 
     /// Fetch the runs for whichever repository the drill-down is showing.
     esp_err_t refreshDetail();
@@ -107,6 +122,9 @@ class GithubPlugin final : public dashboard::PluginBase {
     dashboard::ShortString username_{"amore55"};
     dashboard::ShortString organisation_;
     std::atomic<bool> show_work_{false};
+
+    /// Set by the application; see setFilterPersister(). LVGL thread only.
+    std::function<void(bool)> persist_filter_;
 
     /// Set when setAccount() changes something, so fetch() knows to discard what it holds
     /// rather than merging new repositories into an old list.

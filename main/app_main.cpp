@@ -839,6 +839,21 @@ extern "C" void app_main(void) {
         // Order and enabled flags come from stored settings; the loader lets the Settings page
         // re-apply them later without a restart.
         g_pages.setConfigurationLoader(&applyPageConfiguration);
+
+        // The GitHub filter is a button on the page AND a stored setting. Without this the button
+        // worked and the choice silently reverted on every boot.
+        g_github.setFilterPersister([](bool show_work) {
+            if (g_settings.github_show_work == show_work) {
+                return;
+            }
+            g_settings.github_show_work = show_work;
+            const esp_err_t err = g_settings_store.save(g_settings);
+            if (err != ESP_OK) {
+                // Not worth failing the button press over — the filter has already moved on
+                // screen and the only loss is that it will not survive a restart.
+                ESP_LOGW(kTag, "could not persist the GitHub filter: %s", esp_err_to_name(err));
+            }
+        });
         applyPageConfiguration();
 
         // REGRESSION CANARY, and worth keeping. Building every page should cost ZERO internal

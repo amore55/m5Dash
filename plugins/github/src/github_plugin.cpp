@@ -132,6 +132,9 @@ void GithubPlugin::buildListView(lv_obj_t* parent) {
             auto* self = static_cast<GithubPlugin*>(lv_event_get_user_data(event));
             // nullptr for username and organisation means "unchanged" — only the filter moves.
             self->setAccount(nullptr, nullptr, /*show_work=*/false);
+            if (self->persist_filter_) {
+                self->persist_filter_(false);
+            }
             self->updateFilterButtons();
             self->markDirty();  // show the cached other list at once
         },
@@ -143,6 +146,9 @@ void GithubPlugin::buildListView(lv_obj_t* parent) {
         [](lv_event_t* event) {
             auto* self = static_cast<GithubPlugin*>(lv_event_get_user_data(event));
             self->setAccount(nullptr, nullptr, /*show_work=*/true);
+            if (self->persist_filter_) {
+                self->persist_filter_(true);
+            }
             self->updateFilterButtons();
             self->markDirty();
         },
@@ -313,7 +319,22 @@ esp_err_t GithubPlugin::fetch(bool force) {
     if (detail_pending_.exchange(false, std::memory_order_relaxed)) {
         return refreshDetail();
     }
-    return refreshRepositories(showingWork() ? RepoScope::Work : RepoScope::Mine);
+
+    const bool work_first = showingWork();
+    const RepoScope active = work_first ? RepoScope::Work : RepoScope::Mine;
+    const RepoScope other = work_first ? RepoScope::Mine : RepoScope::Work;
+
+    const esp_err_t err = refreshRepositories(active, /*primary=*/true);
+
+    // Then warm the OTHER list, so pressing the filter is instant rather than starting a
+    // twelve-second fetch, and so a newly-added work token is exercised without waiting for
+    // someone to press Work. Doubles the requests to fourteen a refresh — at 5000/hour with a
+    // token that is nothing, and it is skipped entirely when the scope has no token.
+    if (!account_changed_.load(std::memory_order_relaxed) &&
+        !detail_pending_.load(std::memory_order_relaxed)) {
+        refreshRepositories(other, /*primary=*/false);
+    }
+    return err;
 }
 
 esp_err_t GithubPlugin::refreshDetail() {
@@ -350,8 +371,12 @@ esp_err_t GithubPlugin::refreshDetail() {
     return ESP_OK;
 }
 
-esp_err_t GithubPlugin::refreshRepositories(RepoScope scope) {
-    account_changed_.store(false, std::memory_order_relaxed);
+esp_err_t GithubPlugin::refreshRepositories(RepoScope scope, bool primary) {
+    // Only the primary pass clears this: the secondary runs after it and must not swallow a
+    // change that arrived in between.
+    if (primary) {
+        account_changed_.store(false, std::memory_order_relaxed);
+    }
 
     dashboard::ShortString username;
     dashboard::ShortString organisation;
@@ -371,7 +396,9 @@ esp_err_t GithubPlugin::refreshRepositories(RepoScope scope) {
         const esp_err_t err = provider_.fetchRepos(scope, username.c_str(), organisation.c_str(),
                                                    buffer.data(), buffer.capacity(), repos);
         if (err != ESP_OK) {
-            setError(provider_.lastError());
+            if (primary) {
+                setError(provider_.lastError());
+            }
             return err;
         }
     }
@@ -436,7 +463,7 @@ esp_err_t GithubPlugin::refreshRepositories(RepoScope scope) {
              static_cast<unsigned>(with_runs), static_cast<unsigned>(repos.count),
              static_cast<unsigned>(failures));
 
-    if (failures > 0 && failures == repos.count) {
+    if (primary && failures > 0 && failures == repos.count) {
         // Every status failed, which almost always means the rate limit. Worth saying, because
         // the list looks fine and the reason is invisible otherwise.
         setError(provider_.lastError());
