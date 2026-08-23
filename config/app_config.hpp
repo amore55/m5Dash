@@ -42,6 +42,11 @@ constexpr uint32_t kStaleAfterIntervals = 3;
 constexpr uint32_t kWeatherRefreshMs = 20u * 60u * 1000u;        // ~20 minutes
 constexpr uint32_t kTflCommuteRefreshMs = 2u * 60u * 1000u;      // 2 minutes in commute
 constexpr uint32_t kTflIdleRefreshMs = 10u * 60u * 1000u;        // 10 minutes otherwise
+
+/// GitHub. Deliberately slow: one refresh is 1 + 10 requests, and unauthenticated GitHub allows
+/// 60 an hour, so 15 minutes is about as often as this can run and still leave headroom for the
+/// drill-down requests a person actually triggers.
+constexpr uint32_t kGithubRefreshMs = 15u * 60u * 1000u;
 constexpr uint32_t kClaudeRefreshMs = 5u * 60u * 1000u;          // ~5 minutes
 constexpr uint32_t kTodosRefreshMs = 30u * 1000u;                // UI reconcile only
 
@@ -77,7 +82,21 @@ constexpr uint32_t kNtpResyncMs = 6u * 60u * 60u * 1000u;        // 6 hours
 /// Hard ceiling on any HTTP response we will buffer. A response larger than this is
 /// abandoned rather than truncated, because a truncated JSON body is a parse error that
 /// looks like a server fault.
-constexpr size_t kHttpMaxResponseBytes = 64u * 1024u;
+///
+/// RAISED FROM 64 KB FOR GITHUB, on measurement rather than guesswork. Every object in an
+/// `actions/runs` response embeds the full repository and head commit, so:
+///
+///     actions/runs?per_page=5                          98,828 B
+///     actions/runs?per_page=5&exclude_pull_requests    72,888 B
+///     actions/runs?per_page=1                          19,827 B
+///     users/{u}/repos?per_page=10                      61,650 B
+///
+/// The drill-down needs 73 KB even trimmed, and a ten-repo list at 62 KB was already inside a
+/// rounding error of the old ceiling. This is not a memory constraint — buffers come from PSRAM
+/// via ResponseBuffer, and 32 MB of it means the bytes are free. It is a bound on how much a
+/// hostile or broken upstream can make one request cost, and 192 KB keeps that bound meaningful
+/// while leaving room above the worst real observation.
+constexpr size_t kHttpMaxResponseBytes = 192u * 1024u;
 
 /// Per-request timeout for ordinary API calls.
 constexpr int kHttpTimeoutMs = 12000;
