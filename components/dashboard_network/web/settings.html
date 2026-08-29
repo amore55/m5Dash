@@ -216,6 +216,26 @@
         plain static host).
       </p>
 
+      <h2>To-dos (Telegram)</h2>
+      <label for="telegram_bot_token">Bot token</label>
+      <input id="telegram_bot_token" type="password" autocomplete="off" spellcheck="false"
+             placeholder="leave blank to keep the stored token">
+      <p class="note" id="telegram_token_note"></p>
+      <label class="inline"><input id="telegram_token_clear" type="checkbox"> Remove the stored
+        token</label>
+
+      <label for="telegram_allowed_user_id">Your Telegram user id</label>
+      <input id="telegram_allowed_user_id" type="number" step="1" placeholder="0 = nobody">
+      <p class="note">
+        Get a bot token from @BotFather, and your own numeric id from @userinfobot — both on
+        Telegram. Only messages from this id are acted on; anything else is silently ignored, so
+        a stranger who finds the bot's username cannot tell it is even listening. Message the bot
+        to add a task, or send <code>/list</code>, <code>/done &lt;id&gt;</code>,
+        <code>/reopen &lt;id&gt;</code>, <code>/delete &lt;id&gt;</code>, <code>/clear</code>.
+        Typing happens in Telegram; on the device itself you can tap a task to complete it or tap
+        its bin icon twice to delete it.
+      </p>
+
       <button type="submit" id="go">Save</button>
     </form>
     <div class="msg" id="msg"></div>
@@ -350,6 +370,11 @@
     $('ota_manifest_url').value = s.ota_manifest_url || '';
     $('ota_channel').value = s.ota_channel || 'stable';
     $('ota_automatic_install').value = s.ota_automatic_install ? '1' : '0';
+
+    $('telegram_allowed_user_id').value = s.telegram_allowed_user_id || '';
+    $('telegram_token_note').textContent = s.has_telegram_token
+      ? 'A token is stored. Type a new one to replace it.'
+      : 'No token stored — the bot cannot receive messages yet.';
     $('ms_signin_note').textContent = s.has_ms_signin
       ? 'Signed in.'
       : (s.ms_tenant_id && s.ms_client_id
@@ -444,6 +469,10 @@
     if ($('quote_key_clear').checked) { fields.quote_api_key = ''; }
     else if (key) { fields.quote_api_key = key; }
 
+    var tgToken = $('telegram_bot_token').value;
+    if ($('telegram_token_clear').checked) { fields.telegram_bot_token = ''; }
+    else if (tgToken) { fields.telegram_bot_token = tgToken; }
+
     return fields;
   }
 
@@ -470,16 +499,19 @@
       ms_client_id: $('ms_client_id').value,
       ota_manifest_url: $('ota_manifest_url').value,
       ota_channel: $('ota_channel').value,
-      ota_automatic_install: $('ota_automatic_install').value
+      ota_automatic_install: $('ota_automatic_install').value,
+      telegram_allowed_user_id: $('telegram_allowed_user_id').value
     })).then(function () {
       Dash.say('Saved.', 'ok');
       // Never leave a typed secret sitting in the DOM after it has been stored.
       $('github_token').value = '';
       $('github_work_token').value = '';
       $('quote_api_key').value = '';
+      $('telegram_bot_token').value = '';
       $('github_token_clear').checked = false;
       $('github_work_token_clear').checked = false;
       $('quote_key_clear').checked = false;
+      $('telegram_token_clear').checked = false;
       $('go').disabled = false;
       load();
     }).catch(function (err) {

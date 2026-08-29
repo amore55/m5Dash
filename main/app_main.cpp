@@ -54,6 +54,8 @@
 #include "plugins/elizabeth_plugin.hpp"
 #include "plugins/calendar_plugin.hpp"
 #include "plugins/github_plugin.hpp"
+#include "plugins/tasks_plugin.hpp"
+#include "plugins/telegram_service.hpp"
 #include "plugins/summary_plugin.hpp"
 #include "plugins/weather_plugin.hpp"
 
@@ -79,6 +81,9 @@ plugins::ElizabethPlugin g_elizabeth;
 plugins::GithubPlugin g_github;
 
 plugins::CalendarPlugin g_calendar;
+
+plugins::TasksPlugin g_tasks_page;
+plugins::TelegramService g_telegram;
 
 // Claude usage removed for now (2026-08-24) — there is no public API for a personal Claude
 // subscription's usage, so the page was a placeholder with nothing to show. Settings::claude_*
@@ -153,8 +158,8 @@ void applyPageConfiguration() {
 
     // Enabled flags are applied per plugin. An empty enabled_pages list means "all", which
     // Settings::pageEnabled() already handles.
-    static const char* const kRotationIds[] = {"summary", "clock",    "weather",
-                                               "elizabeth", "github", "calendar"};
+    static const char* const kRotationIds[] = {"summary", "clock",    "weather",   "elizabeth",
+                                               "github",  "calendar", "tasks"};
     for (const char* id : kRotationIds) {
         g_pages.setEnabled(id, g_settings.pageEnabled(id));
     }
@@ -191,6 +196,8 @@ void applySettings(tab5::Board& board) {
     g_github.setAliases(g_settings.github_aliases.c_str());
 
     g_calendar.setAccount(g_settings.ms_tenant_id.c_str(), g_settings.ms_client_id.c_str());
+
+    g_telegram.setAllowedUserId(g_settings.telegram_allowed_user_id);
 }
 
 /// Last value seen from the gesture detector, so a touch is acted on once per press-poll.
@@ -853,6 +860,15 @@ extern "C" void app_main(void) {
         ESP_LOGW(kTag, "OTA service could not start; updates will be unavailable this boot");
     }
 
+    // The page reads the SAME TaskStore Telegram writes to — see tasks_plugin.hpp for why the
+    // page's own fetch() does no networking at all. Wired before g_telegram.start() so the
+    // very first command processed after boot still has somewhere to report a redraw to.
+    g_tasks_page.setStore(&g_tasks);
+    g_telegram.setOnChanged([] { g_tasks_page.notifyChanged(); });
+    if (g_telegram.start(g_tasks) != ESP_OK) {
+        ESP_LOGW(kTag, "Telegram service could not start; to-dos will be local-only this boot");
+    }
+
     // Timezone comes from settings now, then the RTC. Doing it in this order means the restored
     // time is interpreted with British Summer Time applied from the very first render.
     if (board.rtc().attached()) {
@@ -865,7 +881,7 @@ extern "C" void app_main(void) {
     // because its tiles are built once from that list. Settings is excluded deliberately: it is
     // an overlay reached by long press, and a tile leading to it would make it a seventh page.
     static dashboard::DashboardPlugin* const kSummarised[] = {
-        &g_clock, &g_weather, &g_elizabeth, &g_github, &g_calendar};
+        &g_clock, &g_weather, &g_elizabeth, &g_github, &g_calendar, &g_tasks_page};
     g_summary.setPages(kSummarised, sizeof(kSummarised) / sizeof(kSummarised[0]), &g_pages);
 
     initialisePlugin(g_summary);
@@ -874,6 +890,7 @@ extern "C" void app_main(void) {
     initialisePlugin(g_elizabeth);
     initialisePlugin(g_github);
     initialisePlugin(g_calendar);
+    initialisePlugin(g_tasks_page);
     initialisePlugin(g_settings_page);
 
     {
@@ -890,6 +907,7 @@ extern "C" void app_main(void) {
         ESP_ERROR_CHECK(g_pages.add(&g_elizabeth, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_github, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_calendar, /*in_rotation=*/true));
+        ESP_ERROR_CHECK(g_pages.add(&g_tasks_page, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_settings_page, /*in_rotation=*/false));
         g_pages.setOverlayPageId("settings");
         g_pages.setHomePageId("summary");

@@ -145,6 +145,15 @@ CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
 # is TRY_ALLOCATE — anything that genuinely needs DMA-capable internal memory still gets it.
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
+# Frees each TLS session's internal-only working buffers (the parts EXTERNAL_MEM_ALLOC above does
+# not cover — those are still internal-SRAM by construction) as soon as the handshake completes,
+# instead of holding them for the life of the connection. Turned on after adding OTA, then
+# Telegram/tasks pushed the boot-time burst of sequential plugin fetches back into the exact
+# §1.3 failure — esp_dma_capable_malloc failing inside esp_hosted's SDIO driver, unrelated to
+# whichever plugin actually spent the memory — with more permanent worker-stack baseline cost
+# than the ~65 KB this budget was originally measured against.
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+
 # ---------------------------------------------------------------------------------------
 # HTTP client / server
 # ---------------------------------------------------------------------------------------

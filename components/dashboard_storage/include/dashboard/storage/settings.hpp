@@ -154,7 +154,7 @@ struct Settings {
     /// app_main.cpp. A device with "claude" already in its STORED order keeps it there
     /// harmlessly; PageManager ignores an id with no registered plugin, so no migration was
     /// needed to remove one, unlike renaming "todos" to "calendar" was.
-    FixedString<224> page_order{"summary,clock,weather,elizabeth,calendar,github"};
+    FixedString<224> page_order{"summary,clock,weather,elizabeth,calendar,github,tasks"};
 
     // ---- OTA ---------------------------------------------------------------------------
     ShortString ota_channel{"stable"};

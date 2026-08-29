@@ -54,7 +54,13 @@ const char* toString(OtaState state) {
 }
 
 esp_err_t OtaService::start() {
-    return worker_.start("ota", 16384);
+    // 8 KB, the project default (see plugin_base.hpp's own workerStackBytes()) — not the 16 KB
+    // this originally guessed at. Nothing in this file keeps a large buffer on the stack: the
+    // manifest and the streamed download both live in PSRAM (ResponseBuffer / streamGet's
+    // sink), and the largest stack-resident locals are a mbedtls_sha256_context and a handful of
+    // short strings. Right-sized down from 16 KB after adding Telegram/tasks made internal SRAM
+    // tight enough to reproduce docs/BACKLOG.md §1.3's boot-time crash again — see that entry.
+    return worker_.start("ota", 8192);
 }
 
 void OtaService::setProgress(const OtaProgress& progress) {

@@ -336,7 +336,8 @@ the time, the line status without detail, the Claude percentage. It needs `summa
 `DashboardPlugin`/`PluginBase` so each plugin can report a headline value and state; three plugins
 now exist to summarise, which is what it was waiting for.
 
-Then, in order: to-dos (Telegram) → Claude → OTA.
+~~Then, in order: to-dos (Telegram) → Claude → OTA.~~ Done, in a different order — OTA and Claude's
+retirement 24 August, to-dos 29 August. See that session's entry below.
 
 **Before to-dos or Claude, read §1.3 and close known gap 2** — those are the first plugins to carry
 a bearer token, and `Authorization` is not currently stripped across a cross-host redirect.
@@ -366,8 +367,9 @@ a bearer token, and `Authorization` is not currently stripped across a cross-hos
 3. **No captive-portal DNS hijack**, so the setup page has to be typed rather than popping up.
 4. **`components/dashboard_core/src/theme.cpp` and `web/style.css` duplicate the palette.** Change
    one, change the other.
-5. The `todos`, `claude` and `settings` pages are still `PlaceholderPlugin` — they render a
-   description and fetch nothing.
+5. ~~The `todos`, `claude` and `settings` pages are still `PlaceholderPlugin`~~ `todos` is now the
+   real `tasks` page (Telegram-backed, see the 29 August session below); `claude` was retired;
+   `settings` remains a placeholder by design (it is the overlay itself, not a page with content).
 6. **The Elizabeth line page's LAYOUT has not been looked at by a human.** Its data path is verified
    from the serial log (status parsed worst-of, 4-5 departures, cache restored at boot); the
    arrangement of the status card and the board is arithmetic on paper. The weather page's layout
@@ -384,6 +386,79 @@ a bearer token, and `Authorization` is not currently stripped across a cross-hos
    testable — no ESP-IDF, no LVGL, and the parsers take the current time as an argument precisely so
    they are deterministic — but there is no runner on this machine to test them with. Saved live
    fixtures would be worth capturing while the API is fresh in mind.
+
+### Session of 29 August 2026 — Telegram to-dos, and §1.3's crash came back
+
+**To-dos: built end-to-end, never exercised against a real bot token.** New `plugins/tasks/`:
+`TelegramService` (long-polls `getUpdates`, one worker task, never returns) mutating the
+already-built `dashboard_storage::TaskStore`, and `TasksPlugin` (the renamed `todos` page) purely
+reconciling the UI against it — see `tasks_plugin.hpp`'s own header comment for why its `fetch()`
+does no networking at all. Six commands: a bare message adds a task (`tg-<update_id>` makes
+replaying an update idempotent), `/list`, `/done`/`/complete`, `/reopen`/`/undone`,
+`/delete`/`/remove`, `/clear`. Only one Telegram user id is ever answered — everyone else's
+messages are silently ignored, not even an error reply, so a stranger who finds the bot cannot
+even confirm it exists. Settings page grew a "To-dos (Telegram)" section (bot token, write-only,
+same pattern as every other secret; allowed user id, a plain field like `github_username`, not a
+secret).
+
+**One genuinely new credential-leak class, caught before shipping, not after:** Telegram's Bot API
+puts the token in the URL PATH — `/bot<TOKEN>/getUpdates` — not a header (GitHub, Microsoft) or a
+query parameter (TfL), which is what every prior integration's redaction assumed. The existing
+`redactUrl()` keeps everything up to `?`, so it would have printed the token in full on every log
+line. Fixed with `HttpRequest::path_is_sensitive` + `redactUrlHostOnly()` (keeps only the scheme
+and host) in `dashboard_network`, used by both of `TelegramService`'s calls.
+
+**§1.3 happened again, reproducibly, and the cause was NOT Telegram's own worker task.** First
+boot with the new `tasks`/`telegram` workers added:
+
+```
+E (18392) dma_utils: esp_dma_capable_malloc(181): Not enough heap memory
+assert failed: sdio_push_data_to_queue sdio_drv.c:701 (pkt_rxbuff)
+```
+
+Same failure family as §1.3's original table: a burst of sequential TLS handshakes at boot (every
+plugin's first fetch, mDNS starting, SNTP starting, all within about ten seconds of "network
+online") drove internal SRAM low enough that `esp_hosted`'s SDIO driver — an entirely unrelated
+component — could not get a DMA-capable RX buffer and asserted. It reproduced with no Telegram bot
+token configured, i.e. with `TelegramService`'s own worker doing nothing but the
+"not configured, wait" branch — so the new *permanent* internal-SRAM cost of the feature was the
+culprit, not anything it did at runtime.
+
+Three fixes, in the order they were tried and measured on device (`heap_caps_get_minimum_free_size`
+via the existing `health:` log line), each with a fresh cold boot after every change:
+
+1. **`sendReply()`'s two ~4.6 KB percent-encoding buffers moved off the stack onto PSRAM**
+   (`ResponseBuffer`, the same "big + short-lived + must not cost internal SRAM" tool §1.3 already
+   established) — this was the single largest stack-resident thing the whole feature added.
+   Crash still reproduced afterwards: this alone was not enough.
+2. **`CONFIG_MBEDTLS_DYNAMIC_BUFFER=y`** (`sdkconfig.defaults`) — frees each TLS session's
+   internal-only working buffers (the parts `MBEDTLS_EXTERNAL_MEM_ALLOC` does not cover) as soon
+   as the handshake completes rather than holding them for the connection's life. One of the
+   levers §1.3 already named "if headroom gets tight again." Reduced how often the crash
+   reproduced but did not eliminate it outright over repeated cold boots.
+3. **OTA's worker stack was 16 KB and never needed to be** — `ota_service.cpp` keeps its manifest
+   and its streamed download entirely in PSRAM already (`ResponseBuffer`, `streamGet`'s sink); the
+   only stack-resident locals are a `mbedtls_sha256_context` and a few short strings. Cut to the
+   project's own 8192-byte default (`workerStackBytes()`'s convention). Telegram's own worker was
+   also right-sized from an initial 16 KB guess down to that same 8192-byte default once its own
+   big buffers were off the stack (fix 1).
+
+**Measured result: internal low-water mark recovered to ~40–45 KB** across repeated cold boots —
+healthier than the 47.9 KB figure from the *previous* session (OTA alone, before its stack was
+right-sized), even with two more worker tasks and a much larger boot-time fetch burst (calendar,
+weather, both Elizabeth line calls, and — this run — thirteen sequential GitHub API calls for two
+account aliases, all serialised through `tlsGate()`). No crash across multiple resets after all
+three fixes landed. **The lesson, worth restating because it cost the whole point of the session
+to relearn:** a worker's stack size is a permanent tax on the same ~65 KB budget §1.3 measured,
+regardless of what that worker actually does at runtime — size it from what the code really keeps
+on the stack, not from copying a bigger sibling's number "to be safe." A generous guess here is not
+conservative, it is a live regression waiting for the next plugin to trip over it.
+
+**Still completely untested: the live bot.** No real Telegram bot token has been set on the
+device. Before trusting this: create a bot via @BotFather, set the token and your own numeric user
+id (from @userinfobot or similar) on the settings page, then work through all six commands from a
+real chat and confirm `/list`'s short-id resolution, the full-vs-short id fallback in
+`TaskStore::findIndexLocked`, and that a message from any OTHER Telegram account is truly ignored.
 
 ### A wanted feature, captured before it is forgotten
 

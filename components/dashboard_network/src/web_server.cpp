@@ -431,6 +431,11 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     const bool has_ms_signin =
         dashboard::storage::SecretStore::has(dashboard::storage::Secret::MicrosoftRefreshToken);
 
+    // telegram_allowed_user_id is not a secret either — it identifies WHO the bot listens to,
+    // the same category as github_username, not a credential.
+    const bool has_telegram_token =
+        dashboard::storage::SecretStore::has(dashboard::storage::Secret::TelegramBotToken);
+
     // PRESENCE, never content. has_* is what lets the page render "a token is stored — type a
     // new one to replace it" without the token ever leaving the device.
     const bool has_github_token =
@@ -442,7 +447,7 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
 
     // Sized for the escape buffers above at their worst case: jsonEscape can treble a string,
     // and ota_manifest_url (a UrlString, 256 characters) alone is the largest at 768 out.
-    char body[4736];
+    char body[4864];
     std::snprintf(body, sizeof(body),
                   "{\"ok\":true,\"weather_label\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,"
                   "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s,"
@@ -455,7 +460,8 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   "\"has_quote_api_key\":%s,"
                   "\"ms_tenant_id\":\"%s\",\"ms_client_id\":\"%s\",\"has_ms_signin\":%s,"
                   "\"ota_channel\":\"%s\",\"ota_manifest_url\":\"%s\","
-                  "\"ota_automatic_install\":%s}",
+                  "\"ota_automatic_install\":%s,"
+                  "\"telegram_allowed_user_id\":%lld,\"has_telegram_token\":%s}",
                   label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
                   static_cast<long>(s.brightness_percent),
                   static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
@@ -466,7 +472,9 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   has_github_work_token ? "true" : "false",
                   has_quote_key ? "true" : "false", ms_tenant, ms_client,
                   has_ms_signin ? "true" : "false", ota_channel, ota_manifest_url,
-                  s.ota_automatic_install ? "true" : "false");
+                  s.ota_automatic_install ? "true" : "false",
+                  static_cast<long long>(s.telegram_allowed_user_id),
+                  has_telegram_token ? "true" : "false");
     return httpd_resp_sendstr(req, body);
 }
 
@@ -559,6 +567,12 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
         edited.ota_automatic_install = (text[0] == '1' || text[0] == 't');
     }
 
+    if (findFormField(body, "telegram_allowed_user_id", text, sizeof(text)) &&
+        text[0] != '\0') {
+        // A bare numeric id, not a secret — see the GET handler's comment on the same field.
+        edited.telegram_allowed_user_id = std::strtoll(text, nullptr, 10);
+    }
+
     // SECRETS ARE WRITE-ONLY FROM HERE. They go straight to SecretStore and are never read back
     // into `edited`, never returned by the GET handler and never logged — the page shows only
     // whether one is present. An ABSENT field leaves the stored secret alone, so saving the form
@@ -586,6 +600,14 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
         const esp_err_t stored =
             dashboard::storage::SecretStore::set(dashboard::storage::Secret::QuoteApiKey, secret);
         ESP_LOGI(kTag, "quote API key %s from the web page",
+                 secret[0] == '\0' ? "cleared" : (stored == ESP_OK ? "stored" : "REJECTED"));
+        secrets_changed = secrets_changed || stored == ESP_OK;
+    }
+    secureZero(secret, sizeof(secret));
+    if (findFormField(body, "telegram_bot_token", secret, sizeof(secret))) {
+        const esp_err_t stored = dashboard::storage::SecretStore::set(
+            dashboard::storage::Secret::TelegramBotToken, secret);
+        ESP_LOGI(kTag, "Telegram bot token %s from the web page",
                  secret[0] == '\0' ? "cleared" : (stored == ESP_OK ? "stored" : "REJECTED"));
         secrets_changed = secrets_changed || stored == ESP_OK;
     }

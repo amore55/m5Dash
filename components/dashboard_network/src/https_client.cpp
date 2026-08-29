@@ -377,6 +377,24 @@ void redactUrl(const char* url, char* out, size_t capacity) {
     out[copy] = '\0';
 }
 
+void redactUrlHostOnly(const char* url, char* out, size_t capacity) {
+    if (out == nullptr || capacity == 0) {
+        return;
+    }
+    if (url == nullptr) {
+        std::snprintf(out, capacity, "(no url)");
+        return;
+    }
+    const char* scheme_end = std::strstr(url, "://");
+    const char* host_start = (scheme_end != nullptr) ? scheme_end + 3 : url;
+    const char* path_start = std::strchr(host_start, '/');
+    const size_t keep = (path_start != nullptr) ? static_cast<size_t>(path_start - url)
+                                                : std::strlen(url);
+    const size_t copy = (keep < capacity - 1) ? keep : capacity - 1;
+    std::memcpy(out, url, copy);
+    out[copy] = '\0';
+}
+
 esp_err_t HttpsClient::get(const HttpRequest& request, char* out, size_t capacity,
                            HttpResponse& response) {
     response = HttpResponse{};
@@ -395,7 +413,11 @@ esp_err_t HttpsClient::get(const HttpRequest& request, char* out, size_t capacit
     }
 
     char safe_url[kLogUrlBytes];
-    redactUrl(request.url, safe_url, sizeof(safe_url));
+    if (request.path_is_sensitive) {
+        redactUrlHostOnly(request.url, safe_url, sizeof(safe_url));
+    } else {
+        redactUrl(request.url, safe_url, sizeof(safe_url));
+    }
 
     const int attempts = (request.max_attempts > 0) ? request.max_attempts : 1;
     esp_err_t err = ESP_FAIL;
@@ -435,7 +457,11 @@ esp_err_t HttpsClient::streamGet(const HttpRequest& request, const StreamSink& s
     }
 
     char safe_url[kLogUrlBytes];
-    redactUrl(request.url, safe_url, sizeof(safe_url));
+    if (request.path_is_sensitive) {
+        redactUrlHostOnly(request.url, safe_url, sizeof(safe_url));
+    } else {
+        redactUrl(request.url, safe_url, sizeof(safe_url));
+    }
 
     // ONE attempt, deliberately, and held for the WHOLE call rather than per-attempt as get()'s
     // loop does — see tlsGate()'s declaration in the header. Retrying a partial multi-megabyte

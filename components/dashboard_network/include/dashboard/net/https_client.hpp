@@ -75,6 +75,15 @@ struct HttpRequest {
     /// URL-safe, encode them before setting this field.
     const char* post_body = nullptr;
 
+    /// Set when the URL's PATH ITSELF carries a credential, not just its query string.
+    ///
+    /// Every other integration here puts a credential in a header (GitHub, Microsoft) or a query
+    /// parameter (TfL) — both covered by the ordinary log line, which keeps the path and drops
+    /// only the query. Telegram's Bot API does neither: the token IS the path,
+    /// `/bot<TOKEN>/getUpdates`, so that rule would print it. When this is set, the log line
+    /// keeps only the scheme and host — see redactUrlHostOnly().
+    bool path_is_sensitive = false;
+
     int timeout_ms = dash::cfg::kHttpTimeoutMs;
     int max_attempts = dash::cfg::kHttpMaxAttempts;
 };
@@ -137,5 +146,9 @@ class HttpsClient {
 /// Exposed for tests and for callers that log their own request lines. See the header note: the
 /// query is where credentials hide.
 void redactUrl(const char* url, char* out, size_t capacity);
+
+/// Copy only the scheme and host of `url` — no path, no query — for logging a request whose PATH
+/// carries a credential. See HttpRequest::path_is_sensitive.
+void redactUrlHostOnly(const char* url, char* out, size_t capacity);
 
 }  // namespace dashboard::net
