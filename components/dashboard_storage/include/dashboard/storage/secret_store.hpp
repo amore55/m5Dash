@@ -54,12 +54,29 @@ enum class Secret : uint8_t {
     /// answers `{"error": "Missing API Key."}` with no key, so there is no free anonymous tier
     /// to fall back to.
     QuoteApiKey,
+
+    /// Microsoft Graph OAuth refresh token for the calendar page.
+    ///
+    /// The ONLY secret here the device itself ever chooses to overwrite: the device-code sign-in
+    /// exchanges it for a fresh one, and Microsoft rotates it on every use, so a new value is
+    /// stored every time the calendar refreshes rather than once at setup. See kMaxLongSecretLength
+    /// — this is also the one secret long enough to need it.
+    MicrosoftRefreshToken,
 };
 
 /// Longest secret this store will accept. Telegram bot tokens are ~46 characters and a Claude
 /// session cookie is the longest realistic value; 256 leaves generous headroom without making
 /// callers allocate anything awkward on the stack.
 constexpr size_t kMaxSecretLength = 256;
+
+/// Longest secret for the one credential that does not fit the general case: Microsoft's OAuth
+/// refresh token. Public-client refresh tokens from the v2.0 endpoint are long opaque blobs,
+/// commonly a thousand characters or more, with no vendor-documented firm maximum — unlike every
+/// other secret here, which is a short human-issued key. Sized with real headroom rather than
+/// measured, because guessing too small fails silently in the worst place: SecretStore::set()
+/// would refuse to save an otherwise-successful sign-in, and the symptom would be "it signed in
+/// and then immediately asked again."
+constexpr size_t kMaxLongSecretLength = 2048;
 
 class SecretStore {
   public:

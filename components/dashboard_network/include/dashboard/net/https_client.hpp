@@ -50,6 +50,16 @@ struct HttpRequest {
     const char* header_name = nullptr;
     const char* header_value = nullptr;
 
+    /// When non-null, sent as a POST with this exact body and
+    /// "Content-Type: application/x-www-form-urlencoded". GET otherwise.
+    ///
+    /// The caller builds the encoded string. There is exactly one family of callers so far — the
+    /// Microsoft OAuth token endpoint — and every value going into that body (a client ID GUID, an
+    /// opaque device code or refresh token) is already URL-safe by construction, so a general
+    /// percent-encoder was not worth adding for one contract. If a future caller's values are not
+    /// URL-safe, encode them before setting this field.
+    const char* post_body = nullptr;
+
     int timeout_ms = dash::cfg::kHttpTimeoutMs;
     int max_attempts = dash::cfg::kHttpMaxAttempts;
 };
@@ -78,6 +88,11 @@ class HttpsClient {
     ///
     /// `capacity` must be at least 2. Anything above dash::cfg::kHttpMaxResponseBytes is capped
     /// to it — the ceiling is the component's promise, not the caller's choice.
+    ///
+    /// The same rules apply to a POST (`request.post_body` set): a non-2xx status still returns
+    /// non-OK, but the body IS written to `out` first — callers that need to read an OAuth-style
+    /// error body (`{"error":"authorization_pending",...}`) do so by inspecting `out` regardless
+    /// of the return value, exactly as `response.status` is inspected regardless of it.
     esp_err_t get(const HttpRequest& request, char* out, size_t capacity, HttpResponse& response);
 };
 

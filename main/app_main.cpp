@@ -51,6 +51,7 @@
 #include "placeholder_plugin.hpp"
 #include "plugins/clock_plugin.hpp"
 #include "plugins/elizabeth_plugin.hpp"
+#include "plugins/calendar_plugin.hpp"
 #include "plugins/github_plugin.hpp"
 #include "plugins/summary_plugin.hpp"
 #include "plugins/weather_plugin.hpp"
@@ -76,9 +77,7 @@ plugins::ElizabethPlugin g_elizabeth;
 
 plugins::GithubPlugin g_github;
 
-dash::PlaceholderPlugin g_todos{"todos", "To-dos",
-                                "Tasks captured by sending a message to a private Telegram bot, "
-                                "stored on the device and completed by touch."};
+plugins::CalendarPlugin g_calendar;
 
 dash::PlaceholderPlugin g_claude{"claude", "Claude usage",
                                  "Five-hour and weekly allowance with a locally calculated "
@@ -150,8 +149,8 @@ void applyPageConfiguration() {
 
     // Enabled flags are applied per plugin. An empty enabled_pages list means "all", which
     // Settings::pageEnabled() already handles.
-    static const char* const kRotationIds[] = {"summary", "clock",  "weather",  "elizabeth",
-                                               "github",  "todos", "claude"};
+    static const char* const kRotationIds[] = {"summary", "clock",   "weather", "elizabeth",
+                                               "github",  "calendar", "claude"};
     for (const char* id : kRotationIds) {
         g_pages.setEnabled(id, g_settings.pageEnabled(id));
     }
@@ -186,6 +185,8 @@ void applySettings(tab5::Board& board) {
     g_github.setAccount(g_settings.github_username.c_str(),
                         g_settings.github_organisation.c_str(), g_settings.github_show_work);
     g_github.setAliases(g_settings.github_aliases.c_str());
+
+    g_calendar.setAccount(g_settings.ms_tenant_id.c_str(), g_settings.ms_client_id.c_str());
 }
 
 /// Last value seen from the gesture detector, so a touch is acted on once per press-poll.
@@ -805,8 +806,8 @@ extern "C" void app_main(void) {
     // The summary page holds pointers to the others and must know them before it initialises,
     // because its tiles are built once from that list. Settings is excluded deliberately: it is
     // an overlay reached by long press, and a tile leading to it would make it a seventh page.
-    static dashboard::DashboardPlugin* const kSummarised[] = {&g_clock,  &g_weather, &g_elizabeth,
-                                                              &g_github, &g_todos,   &g_claude};
+    static dashboard::DashboardPlugin* const kSummarised[] = {
+        &g_clock, &g_weather, &g_elizabeth, &g_github, &g_calendar, &g_claude};
     g_summary.setPages(kSummarised, sizeof(kSummarised) / sizeof(kSummarised[0]), &g_pages);
 
     initialisePlugin(g_summary);
@@ -814,7 +815,7 @@ extern "C" void app_main(void) {
     initialisePlugin(g_weather);
     initialisePlugin(g_elizabeth);
     initialisePlugin(g_github);
-    initialisePlugin(g_todos);
+    initialisePlugin(g_calendar);
     initialisePlugin(g_claude);
     initialisePlugin(g_settings_page);
 
@@ -831,7 +832,7 @@ extern "C" void app_main(void) {
         ESP_ERROR_CHECK(g_pages.add(&g_weather, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_elizabeth, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_github, /*in_rotation=*/true));
-        ESP_ERROR_CHECK(g_pages.add(&g_todos, /*in_rotation=*/true));
+        ESP_ERROR_CHECK(g_pages.add(&g_calendar, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_claude, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_settings_page, /*in_rotation=*/false));
         g_pages.setOverlayPageId("settings");

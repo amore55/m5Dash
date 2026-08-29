@@ -41,7 +41,7 @@ constexpr int32_t kMinDayBrightnessPercent = 10;
 
 struct Settings {
     /// Bump ONLY when an existing field changes meaning or name. Adding fields does not need it.
-    static constexpr uint32_t kCurrentSchema = 2;
+    static constexpr uint32_t kCurrentSchema = 3;
 
     uint32_t schema = kCurrentSchema;
 
@@ -94,6 +94,22 @@ struct Settings {
     /// Messages from any other sender are ignored. 0 means "not configured".
     int64_t telegram_allowed_user_id = 0;
 
+    // ---- Calendar (Microsoft Graph; the refresh token lives in SecretStore) -------------
+    /// Entra ID tenant: the GUID, or a verified domain like "contoso.onmicrosoft.com". NOT a
+    /// secret — it identifies the organisation, the same way a GitHub org name does, and appears
+    /// in every request URL regardless.
+    ///
+    /// Deliberately not defaulted to "common" or "organizations": those endpoints only work for a
+    /// MULTI-tenant app registration, and a single-tenant one — the ordinary, simpler choice, and
+    /// the one this device's setup instructions assume — is only reachable through its own
+    /// tenant's endpoint.
+    MediumString ms_tenant_id;
+
+    /// The Application (client) ID from the Entra ID app registration. Not a secret: device-code
+    /// sign-in is a PUBLIC client flow by design and needs no client secret at all — the whole
+    /// exchange happens by the owner typing a code into a browser on another device.
+    MediumString ms_client_id;
+
     // ---- Claude (credential lives in SecretStore) --------------------------------------
     ClaudeProvider claude_provider = ClaudeProvider::Disabled;
     MediumString claude_organisation_id;
@@ -133,7 +149,7 @@ struct Settings {
     FixedString<160> enabled_pages;
     /// Raised from 160 when the seventh page landed: the schema-2 migration prepends "summary,"
     /// and appends ",github" to whatever was stored, and 160 could not hold the result.
-    FixedString<224> page_order{"summary,clock,weather,elizabeth,todos,claude,github"};
+    FixedString<224> page_order{"summary,clock,weather,elizabeth,calendar,claude,github"};
 
     // ---- OTA ---------------------------------------------------------------------------
     ShortString ota_channel{"stable"};

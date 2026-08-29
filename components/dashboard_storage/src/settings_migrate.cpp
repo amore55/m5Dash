@@ -46,6 +46,65 @@ void migrate1to2(Settings& settings) {
     settings.schema = 2;
 }
 
+/// Schema 2 -> 3. The to-do placeholder became the calendar page.
+///
+/// The old id "todos" is renamed to "calendar" wherever it appears, TOKEN by token — a substring
+/// replace would also mangle a hypothetical future id containing "todos" as a fragment. Neither
+/// list is discarded, because a stored ORDER or a stored disabled-flag is a deliberate choice
+/// about a page slot, and that slot still exists — it just shows something different now.
+///
+/// `enabled_pages` is included as well as `page_order`: a device where the owner had disabled the
+/// to-do placeholder must not have the calendar page silently re-enabled just because the id
+/// changed underneath it.
+void renameTokenInCsv(FixedString<224>& field, const char* from, const char* to) {
+    if (field.empty() || std::strstr(field.c_str(), from) == nullptr) {
+        return;
+    }
+    // 224 matches FixedString<224>::capacity() above — not decltype(field)::capacity(), because
+    // `field` is a reference and a reference type has no static members of its own to name.
+    char rebuilt[224 + 1] = {};
+    size_t out_len = 0;
+    const char* cursor = field.c_str();
+    while (*cursor != '\0' && out_len + 1 < sizeof(rebuilt)) {
+        const char* comma = std::strchr(cursor, ',');
+        const size_t token_len =
+            (comma != nullptr) ? static_cast<size_t>(comma - cursor) : std::strlen(cursor);
+        const bool matches = token_len == std::strlen(from) && std::strncmp(cursor, from, token_len) == 0;
+        const char* token = matches ? to : cursor;
+        const size_t token_out_len = matches ? std::strlen(to) : token_len;
+
+        if (out_len != 0) {
+            rebuilt[out_len++] = ',';
+        }
+        const size_t copy = (token_out_len < sizeof(rebuilt) - out_len - 1)
+                               ? token_out_len
+                               : sizeof(rebuilt) - out_len - 1;
+        std::memcpy(rebuilt + out_len, token, copy);
+        out_len += copy;
+
+        cursor = (comma != nullptr) ? comma + 1 : cursor + token_len;
+    }
+    rebuilt[out_len] = '\0';
+    field.assign(rebuilt);
+}
+
+void migrate2to3(Settings& settings) {
+    renameTokenInCsv(settings.page_order, "todos", "calendar");
+
+    // enabled_pages is the shorter FixedString<160>, not <224> — renameTokenInCsv only takes the
+    // page_order type, so build a throwaway <224> copy, rename in it, then assign back. Cheap and
+    // avoids a second near-identical function for one field.
+    FixedString<224> enabled_copy(settings.enabled_pages.c_str());
+    renameTokenInCsv(enabled_copy, "todos", "calendar");
+    settings.enabled_pages.assign(enabled_copy.c_str());
+
+    if (settings.default_page.equals("todos")) {
+        settings.default_page.assign("calendar");
+    }
+
+    settings.schema = 3;
+}
+
 // ---------------------------------------------------------------------------------------
 // ADDING A MIGRATION
 //
@@ -89,7 +148,11 @@ MigrationResult migrateSettings(Settings& settings, uint32_t stored_schema) {
         migrate1to2(settings);
         schema = 2;
     }
-    // Future steps chain here: if (schema < 3) { migrate2to3(settings); schema = 3; }
+    if (schema < 3) {
+        migrate2to3(settings);
+        schema = 3;
+    }
+    // Future steps chain here: if (schema < 4) { migrate3to4(settings); schema = 4; }
 
     settings.schema = Settings::kCurrentSchema;
     result.changed = true;

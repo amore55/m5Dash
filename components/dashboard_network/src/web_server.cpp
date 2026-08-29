@@ -415,6 +415,16 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     jsonEscape(s.github_organisation.c_str(), github_org, sizeof(github_org));
     jsonEscape(s.github_aliases.c_str(), github_aliases, sizeof(github_aliases));
 
+    char ms_tenant[3 * 64];
+    char ms_client[3 * 64];
+    jsonEscape(s.ms_tenant_id.c_str(), ms_tenant, sizeof(ms_tenant));
+    jsonEscape(s.ms_client_id.c_str(), ms_client, sizeof(ms_client));
+
+    // Neither is a secret — see Settings::ms_tenant_id's comment — so both are read back plainly,
+    // unlike the GitHub and quote credentials below.
+    const bool has_ms_signin =
+        dashboard::storage::SecretStore::has(dashboard::storage::Secret::MicrosoftRefreshToken);
+
     // PRESENCE, never content. has_* is what lets the page render "a token is stored — type a
     // new one to replace it" without the token ever leaving the device.
     const bool has_github_token =
@@ -426,7 +436,7 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
 
     // Sized for the escape buffers above at their worst case: jsonEscape can treble a string,
     // and github_aliases alone is 192 characters in, 576 out.
-    char body[3328];
+    char body[3712];
     std::snprintf(body, sizeof(body),
                   "{\"ok\":true,\"weather_label\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,"
                   "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s,"
@@ -436,7 +446,8 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   "\"github_username\":\"%s\",\"github_organisation\":\"%s\","
                   "\"github_aliases\":\"%s\","
                   "\"has_github_token\":%s,\"has_github_work_token\":%s,"
-                  "\"has_quote_api_key\":%s}",
+                  "\"has_quote_api_key\":%s,"
+                  "\"ms_tenant_id\":\"%s\",\"ms_client_id\":\"%s\",\"has_ms_signin\":%s}",
                   label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
                   static_cast<long>(s.brightness_percent),
                   static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
@@ -445,7 +456,8 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   github_aliases,
                   has_github_token ? "true" : "false",
                   has_github_work_token ? "true" : "false",
-                  has_quote_key ? "true" : "false");
+                  has_quote_key ? "true" : "false", ms_tenant, ms_client,
+                  has_ms_signin ? "true" : "false");
     return httpd_resp_sendstr(req, body);
 }
 
@@ -514,6 +526,16 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
     }
     if (findFormField(body, "github_aliases", text, sizeof(text))) {
         edited.github_aliases.assign(text);
+    }
+
+    // Neither field is a secret — see Settings::ms_tenant_id — so both are handled exactly like
+    // the GitHub organisation above: read back plainly, and an empty value is accepted, because
+    // clearing either one is what puts the page back into its "not set up" state.
+    if (findFormField(body, "ms_tenant_id", text, sizeof(text))) {
+        edited.ms_tenant_id.assign(text);
+    }
+    if (findFormField(body, "ms_client_id", text, sizeof(text))) {
+        edited.ms_client_id.assign(text);
     }
 
     // SECRETS ARE WRITE-ONLY FROM HERE. They go straight to SecretStore and are never read back

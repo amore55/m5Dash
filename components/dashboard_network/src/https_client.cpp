@@ -109,6 +109,9 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
     cfg.disable_auto_redirect = carries_credential;
     cfg.max_redirection_count = carries_credential ? 0 : 3;
 
+    const bool is_post = (request.post_body != nullptr);
+    cfg.method = is_post ? HTTP_METHOD_POST : HTTP_METHOD_GET;
+
     // Room for the request line and headers. esp_http_client defaults to 512 bytes, which is not
     // enough for the kind of URL these APIs use: Open-Meteo's forecast query names every variable
     // it should return and comes to about 500 characters on its own, so the request line alone
@@ -133,7 +136,11 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
         esp_http_client_set_header(client, request.header_name, request.header_value);
     }
 
-    esp_err_t err = esp_http_client_open(client, 0);
+    // Opened with the body length up front: esp_http_client's manual (open/write/read) mode needs
+    // to know how much it will be asked to write, the same way it needs to know nothing extra for
+    // a bodyless GET.
+    const int post_len = is_post ? static_cast<int>(std::strlen(request.post_body)) : 0;
+    esp_err_t err = esp_http_client_open(client, post_len);
     if (err != ESP_OK) {
         ESP_LOGW(kTag, "%s: connection failed: %s", safe_url, esp_err_to_name(err));
         // Wipe the Authorization header we built before the stack frame goes away.
@@ -142,6 +149,17 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
         return err;
     }
     std::memset(auth, 0, sizeof(auth));
+
+    if (is_post) {
+        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+        const int written = esp_http_client_write(client, request.post_body, post_len);
+        if (written != post_len) {
+            ESP_LOGW(kTag, "%s: POST body did not write in full", safe_url);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
+        }
+    }
 
     // 0 for a chunked response, whose length is genuinely unknown until it ends. The ceiling is
     // still enforced below, by the read loop.

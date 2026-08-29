@@ -168,6 +168,24 @@
         when a new colleague starts &mdash; you just see their username until you add them here.
       </p>
 
+      <h2>Calendar (Today page)</h2>
+      <label for="ms_tenant_id">Microsoft Entra tenant</label>
+      <input id="ms_tenant_id" type="text" autocapitalize="off" spellcheck="false"
+             placeholder="your-org.onmicrosoft.com, or the tenant GUID">
+
+      <label for="ms_client_id">Application (client) ID</label>
+      <input id="ms_client_id" type="text" autocapitalize="off" spellcheck="false"
+             placeholder="from your Entra ID app registration">
+      <p class="note" id="ms_signin_note"></p>
+      <p class="note">
+        No token to paste here: once both fields are saved, the Today page itself shows a short
+        code and an address &mdash; open that address on your phone or computer and enter the
+        code to finish signing in. Needs an app registration with "Allow public client flows" set
+        to Yes and the delegated Graph permission <code>Calendars.Read</code> +
+        <code>offline_access</code> consented; <code>Calendars.ReadBasic</code> is not enough, as
+        it does not include the meeting room.
+      </p>
+
       <h2>Quote of the day</h2>
       <label for="quote_api_key">api-ninjas API key</label>
       <input id="quote_api_key" type="password" autocomplete="off" spellcheck="false"
@@ -298,6 +316,14 @@
     $('github_organisation').value = s.github_organisation || '';
     $('github_aliases').value = s.github_aliases || '';
 
+    $('ms_tenant_id').value = s.ms_tenant_id || '';
+    $('ms_client_id').value = s.ms_client_id || '';
+    $('ms_signin_note').textContent = s.has_ms_signin
+      ? 'Signed in.'
+      : (s.ms_tenant_id && s.ms_client_id
+          ? 'Not signed in yet — check the Today page on the device for a code.'
+          : 'Add both fields above, then check the Today page on the device.');
+
     // The secret fields stay EMPTY on purpose — the device never sends a stored secret back, so
     // there is nothing to prefill. These notes are the only feedback that one is held.
     $('github_token_note').textContent = s.has_github_token
@@ -407,7 +433,9 @@
       display_flipped: $('display_flipped').value,
       github_username: $('github_username').value,
       github_organisation: $('github_organisation').value,
-      github_aliases: $('github_aliases').value
+      github_aliases: $('github_aliases').value,
+      ms_tenant_id: $('ms_tenant_id').value,
+      ms_client_id: $('ms_client_id').value
     })).then(function () {
       Dash.say('Saved.', 'ok');
       // Never leave a typed secret sitting in the DOM after it has been stored.

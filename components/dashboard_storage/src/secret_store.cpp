@@ -22,6 +22,7 @@ constexpr const char* kKeyTflAppKey = "tfl_key";
 constexpr const char* kKeyGithubToken = "gh_token";
 constexpr const char* kKeyGithubWorkToken = "gh_wtoken";
 constexpr const char* kKeyQuoteApiKey = "quote_key";
+constexpr const char* kKeyMsRefreshToken = "ms_refresh";
 constexpr const char* kKeyPinHash = "pin_hash";
 constexpr const char* kKeyPinSalt = "pin_salt";
 
@@ -44,8 +45,16 @@ const char* keyFor(Secret secret) {
             return kKeyGithubWorkToken;
         case Secret::QuoteApiKey:
             return kKeyQuoteApiKey;
+        case Secret::MicrosoftRefreshToken:
+            return kKeyMsRefreshToken;
     }
     return nullptr;
+}
+
+/// The length ceiling that applies to THIS secret. Everything is kMaxSecretLength except the one
+/// credential documented at kMaxLongSecretLength's definition.
+size_t maxLengthFor(Secret secret) {
+    return (secret == Secret::MicrosoftRefreshToken) ? kMaxLongSecretLength : kMaxSecretLength;
 }
 
 /// Overwrite a buffer before it goes out of scope.
@@ -91,7 +100,7 @@ esp_err_t SecretStore::set(Secret secret, const char* value) {
     if (key == nullptr) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (value != nullptr && std::strlen(value) >= kMaxSecretLength) {
+    if (value != nullptr && std::strlen(value) >= maxLengthFor(secret)) {
         ESP_LOGE(kTag, "value for '%s' is too long", key);
         return ESP_ERR_INVALID_SIZE;
     }

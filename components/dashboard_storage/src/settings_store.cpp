@@ -41,6 +41,8 @@ constexpr const char* kKeyCommuteAmEnd = "cm_am_end";
 constexpr const char* kKeyCommutePmStart = "cm_pm_start";
 constexpr const char* kKeyCommutePmEnd = "cm_pm_end";
 constexpr const char* kKeyTelegramUser = "tg_user";
+constexpr const char* kKeyMsTenant = "ms_tenant";
+constexpr const char* kKeyMsClientId = "ms_client";
 constexpr const char* kKeyClaudeProvider = "claude_prov";
 constexpr const char* kKeyClaudeOrg = "claude_org";
 constexpr const char* kKeyClaudeRelay = "claude_relay";
@@ -185,6 +187,9 @@ esp_err_t SettingsStore::load(Settings& out) {
 
     readI64(handle, kKeyTelegramUser, settings.telegram_allowed_user_id);
 
+    readString(handle, kKeyMsTenant, settings.ms_tenant_id);
+    readString(handle, kKeyMsClientId, settings.ms_client_id);
+
     ShortString provider{toString(settings.claude_provider)};
     readString(handle, kKeyClaudeProvider, provider);
     settings.claude_provider = claudeProviderFromString(provider.c_str());
@@ -286,6 +291,10 @@ esp_err_t SettingsStore::save(const Settings& settings) {
 
     note(first, nvs_set_i64(handle, kKeyTelegramUser, settings.telegram_allowed_user_id),
          kKeyTelegramUser);
+
+    note(first, nvs_set_str(handle, kKeyMsTenant, settings.ms_tenant_id.c_str()), kKeyMsTenant);
+    note(first, nvs_set_str(handle, kKeyMsClientId, settings.ms_client_id.c_str()),
+         kKeyMsClientId);
 
     note(first, nvs_set_str(handle, kKeyClaudeProvider, toString(settings.claude_provider)),
          kKeyClaudeProvider);
