@@ -31,12 +31,27 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <mutex>
 
 #include "esp_err.h"
 
 #include "app_config.hpp"
 
 namespace dashboard::net {
+
+/// One TLS session at a time, across the whole device. See https_client.cpp for the measured
+/// reason this exists: two handshakes colliding fell the internal-SRAM low-water mark from
+/// ~40 KB to 14 KB.
+///
+/// Exposed here (rather than kept file-local, as it was before streamGet() existed) because the
+/// OTA download needs to hold it for its own entire multi-megabyte transfer, not just one
+/// attempt — deliberately different from the per-ATTEMPT discipline get()'s retry loop uses. OTA
+/// is rare and user-initiated, and letting a routine plugin fetch's handshake compete with it for
+/// internal SRAM during a live flash write is exactly the class of bug that motivated this gate
+/// in the first place.
+std::mutex& tlsGate();
 
 struct HttpRequest {
     /// Must be https://. Plain http:// is rejected rather than quietly downgraded.
@@ -94,6 +109,27 @@ class HttpsClient {
     /// error body (`{"error":"authorization_pending",...}`) do so by inspecting `out` regardless
     /// of the return value, exactly as `response.status` is inspected regardless of it.
     esp_err_t get(const HttpRequest& request, char* out, size_t capacity, HttpResponse& response);
+
+    /// A chunk of a streamed body. Return false to abort the transfer early — streamGet() then
+    /// fails without reading any more, which is how a sink whose own write failed (a full flash
+    /// partition, a hash context that cannot continue) stops the download rather than the caller
+    /// discovering the problem only after the whole body has already been pointlessly fetched.
+    using StreamSink = std::function<bool(const uint8_t* data, size_t len)>;
+
+    /// Like get(), but the body is delivered to `sink` a chunk at a time instead of being
+    /// accumulated into a caller buffer. For the one download in this firmware too large to hold
+    /// in memory at once — the OTA image — everything else fits comfortably under
+    /// kHttpMaxResponseBytes and should use get() instead.
+    ///
+    /// There is consequently NO SIZE CEILING here — the caller (OtaService) is the one place that
+    /// both knows and enforces the expected size, from the signed manifest, and aborts via the
+    /// sink's return value the moment more arrives than the manifest promised.
+    ///
+    /// `response.length` is the total byte count streamed, not a buffer occupancy; `response`'s
+    /// `truncated` flag is unused here — a short body is instead a mismatch the caller detects by
+    /// comparing `response.length` against the manifest's declared size.
+    esp_err_t streamGet(const HttpRequest& request, const StreamSink& sink,
+                        HttpResponse& response);
 };
 
 /// Copy `url` into `out`, stopping before any query string, for safe logging.

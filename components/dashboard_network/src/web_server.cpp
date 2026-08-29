@@ -11,6 +11,7 @@
 #include "dashboard/net/wifi_manager.hpp"
 #include "dashboard/storage/secret_store.hpp"
 #include "dashboard/time_utils.hpp"
+#include "version.hpp"
 
 namespace dashboard::net {
 namespace {
@@ -415,6 +416,11 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     jsonEscape(s.github_organisation.c_str(), github_org, sizeof(github_org));
     jsonEscape(s.github_aliases.c_str(), github_aliases, sizeof(github_aliases));
 
+    char ota_channel[3 * 32];
+    char ota_manifest_url[3 * 256];
+    jsonEscape(s.ota_channel.c_str(), ota_channel, sizeof(ota_channel));
+    jsonEscape(s.ota_manifest_url.c_str(), ota_manifest_url, sizeof(ota_manifest_url));
+
     char ms_tenant[3 * 64];
     char ms_client[3 * 64];
     jsonEscape(s.ms_tenant_id.c_str(), ms_tenant, sizeof(ms_tenant));
@@ -435,8 +441,8 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
         dashboard::storage::SecretStore::has(dashboard::storage::Secret::QuoteApiKey);
 
     // Sized for the escape buffers above at their worst case: jsonEscape can treble a string,
-    // and github_aliases alone is 192 characters in, 576 out.
-    char body[3712];
+    // and ota_manifest_url (a UrlString, 256 characters) alone is the largest at 768 out.
+    char body[4736];
     std::snprintf(body, sizeof(body),
                   "{\"ok\":true,\"weather_label\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,"
                   "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s,"
@@ -447,7 +453,9 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   "\"github_aliases\":\"%s\","
                   "\"has_github_token\":%s,\"has_github_work_token\":%s,"
                   "\"has_quote_api_key\":%s,"
-                  "\"ms_tenant_id\":\"%s\",\"ms_client_id\":\"%s\",\"has_ms_signin\":%s}",
+                  "\"ms_tenant_id\":\"%s\",\"ms_client_id\":\"%s\",\"has_ms_signin\":%s,"
+                  "\"ota_channel\":\"%s\",\"ota_manifest_url\":\"%s\","
+                  "\"ota_automatic_install\":%s}",
                   label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
                   static_cast<long>(s.brightness_percent),
                   static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
@@ -457,7 +465,8 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   has_github_token ? "true" : "false",
                   has_github_work_token ? "true" : "false",
                   has_quote_key ? "true" : "false", ms_tenant, ms_client,
-                  has_ms_signin ? "true" : "false");
+                  has_ms_signin ? "true" : "false", ota_channel, ota_manifest_url,
+                  s.ota_automatic_install ? "true" : "false");
     return httpd_resp_sendstr(req, body);
 }
 
@@ -536,6 +545,18 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
     }
     if (findFormField(body, "ms_client_id", text, sizeof(text))) {
         edited.ms_client_id.assign(text);
+    }
+
+    // No secret here either: OTA is unauthenticated by design (the repository is public), so
+    // there is nothing to write-only about a channel name and a URL.
+    if (findFormField(body, "ota_channel", text, sizeof(text)) && text[0] != '\0') {
+        edited.ota_channel.assign(text);
+    }
+    if (findFormField(body, "ota_manifest_url", text, sizeof(text))) {
+        edited.ota_manifest_url.assign(text);
+    }
+    if (findFormField(body, "ota_automatic_install", text, sizeof(text)) && text[0] != '\0') {
+        edited.ota_automatic_install = (text[0] == '1' || text[0] == 't');
     }
 
     // SECRETS ARE WRITE-ONLY FROM HERE. They go straight to SecretStore and are never read back
@@ -644,6 +665,75 @@ esp_err_t WebServer::handlePinPost(httpd_req_t* req) {
     return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+esp_err_t WebServer::handleOtaStatus(httpd_req_t* req) {
+    auto* self = static_cast<WebServer*>(req->user_ctx);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+    if (!authorised(req)) {
+        return sendJsonError(req, "401 Unauthorized", "PIN required.");
+    }
+
+    OtaStatus status;  // default "idle" if the callback below is unset or never called
+    if (self != nullptr && self->callbacks_.read_ota_status) {
+        self->callbacks_.read_ota_status(status);
+    }
+
+    char state[3 * sizeof(status.state)];
+    char version[3 * sizeof(status.available_version)];
+    char message[3 * sizeof(status.message)];
+    jsonEscape(status.state, state, sizeof(state));
+    jsonEscape(status.available_version, version, sizeof(version));
+    jsonEscape(status.message, message, sizeof(message));
+
+    // Sized for the escape buffers above at their worst case (jsonEscape can treble a string) plus
+    // room for two worst-case %lu values, the same over-generous style used throughout this file
+    // to satisfy -Werror=format-truncation rather than the realistic size of any of this.
+    char body[960];
+    std::snprintf(body, sizeof(body),
+                  "{\"ok\":true,\"current_version\":\"%s\",\"state\":\"%s\","
+                  "\"available_version\":\"%s\",\"message\":\"%s\","
+                  "\"bytes_downloaded\":%lu,\"bytes_total\":%lu}",
+                  dash::kAppVersion, state, version, message,
+                  static_cast<unsigned long>(status.bytes_downloaded),
+                  static_cast<unsigned long>(status.bytes_total));
+    return httpd_resp_sendstr(req, body);
+}
+
+esp_err_t WebServer::handleOtaCheck(httpd_req_t* req) {
+    auto* self = static_cast<WebServer*>(req->user_ctx);
+    httpd_resp_set_type(req, "application/json");
+
+    if (!authorised(req)) {
+        return sendJsonError(req, "401 Unauthorized", "PIN required.");
+    }
+    if (self == nullptr || !self->callbacks_.on_ota_check) {
+        return sendJsonError(req, "501 Not Implemented", "Updates are not available.");
+    }
+    self->callbacks_.on_ota_check();
+    ESP_LOGI(kTag, "update check requested from the web page");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
+esp_err_t WebServer::handleOtaInstall(httpd_req_t* req) {
+    auto* self = static_cast<WebServer*>(req->user_ctx);
+    httpd_resp_set_type(req, "application/json");
+
+    if (!authorised(req)) {
+        return sendJsonError(req, "401 Unauthorized", "PIN required.");
+    }
+    if (self == nullptr || !self->callbacks_.on_ota_install) {
+        return sendJsonError(req, "501 Not Implemented", "Updates are not available.");
+    }
+    self->callbacks_.on_ota_install();
+    // The response may or may not be the last thing this device ever sends over THIS connection
+    // before it reboots — the install runs on its own task and this handler has no way to know
+    // how far it got by the time it returns. That is fine: the settings page is expected to poll
+    // /api/ota/status afterwards, not to trust this response as the outcome.
+    ESP_LOGW(kTag, "update install requested from the web page");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 esp_err_t WebServer::handleNotFound(httpd_req_t* req, httpd_err_code_t) {
     // Send unknown paths to the Wi-Fi page. With no DNS hijack this only rescues someone who
     // typed a stray URL, but it costs nothing and turns a 404 into the page they wanted.
@@ -667,7 +757,7 @@ esp_err_t WebServer::start(WifiManager& wifi, Callbacks callbacks) {
     cfg.server_port = 80;
     // The scan handler puts a ScanResult array and the JSON assembly buffers on this stack.
     cfg.stack_size = 8192;
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 16;  // 10 existing + 3 OTA + headroom
     // A browser opens several sockets for one page. Recycle the oldest rather than refusing a
     // connection, which on a setup page reads as the device being broken.
     cfg.lru_purge_enable = true;
@@ -702,6 +792,10 @@ esp_err_t WebServer::start(WifiManager& wifi, Callbacks callbacks) {
     route("/api/settings", HTTP_GET, &handleSettingsGet);
     route("/api/settings", HTTP_POST, &handleSettingsPost);
     route("/api/pin", HTTP_POST, &handlePinPost);
+
+    route("/api/ota/status", HTTP_GET, &handleOtaStatus);
+    route("/api/ota/check", HTTP_POST, &handleOtaCheck);
+    route("/api/ota/install", HTTP_POST, &handleOtaInstall);
 
     httpd_register_err_handler(server_, HTTPD_404_NOT_FOUND, &handleNotFound);
 

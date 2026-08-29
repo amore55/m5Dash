@@ -149,7 +149,12 @@ struct Settings {
     FixedString<160> enabled_pages;
     /// Raised from 160 when the seventh page landed: the schema-2 migration prepends "summary,"
     /// and appends ",github" to whatever was stored, and 160 could not hold the result.
-    FixedString<224> page_order{"summary,clock,weather,elizabeth,calendar,claude,github"};
+    ///
+    /// "claude" dropped from the default (2026-08-24): the page is retired for now — see
+    /// app_main.cpp. A device with "claude" already in its STORED order keeps it there
+    /// harmlessly; PageManager ignores an id with no registered plugin, so no migration was
+    /// needed to remove one, unlike renaming "todos" to "calendar" was.
+    FixedString<224> page_order{"summary,clock,weather,elizabeth,calendar,github"};
 
     // ---- OTA ---------------------------------------------------------------------------
     ShortString ota_channel{"stable"};

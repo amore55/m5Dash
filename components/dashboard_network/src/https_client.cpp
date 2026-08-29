@@ -13,6 +13,31 @@
 #include "version.hpp"
 
 namespace dashboard::net {
+
+// Declared in https_client.hpp, not file-local, because streamGet()'s OTA caller needs to hold
+// it across a whole multi-megabyte download rather than one attempt — see the header.
+//
+/// Each plugin has its own worker task, so without this their handshakes overlap — and a
+/// handshake is by far the largest transient demand on internal SRAM this firmware makes.
+/// Measured with the weather and Elizabeth line workers colliding on the same millisecond, the
+/// internal low-water mark fell from ~40 KB to **14 KB**. That is close enough to the failure
+/// that produced a reboot loop (see docs/BACKLOG.md §1.3) to be worth designing out rather than
+/// monitoring.
+///
+/// Serialising makes the peak the cost of ONE handshake no matter how many plugins exist, which
+/// means adding the sixth integration cannot quietly reintroduce the crash. The cost is that a
+/// plugin may wait for another's request; with refresh intervals of 2 to 20 minutes against a
+/// 12 s timeout, that is a rare few seconds on a background task nobody is watching.
+///
+/// Held per ATTEMPT by get()'s retry loop, not across the whole retry schedule: sleeping out a
+/// 14 s backoff while holding it would block every other plugin for the duration, which is a
+/// different bug. streamGet() is the one caller that deliberately holds it for the whole call —
+/// see the OTA note in the header.
+std::mutex& tlsGate() {
+    static std::mutex gate;
+    return gate;
+}
+
 namespace {
 
 constexpr const char* kTag = "https";
@@ -29,26 +54,6 @@ const char* userAgent() {
         std::snprintf(ua, sizeof(ua), "DeskDashboard/%s", dash::kAppVersion);
     }
     return ua;
-}
-
-/// One TLS session at a time, across the whole device.
-///
-/// Each plugin has its own worker task, so without this their handshakes overlap — and a handshake
-/// is by far the largest transient demand on internal SRAM this firmware makes. Measured with the
-/// weather and Elizabeth line workers colliding on the same millisecond, the internal low-water
-/// mark fell from ~40 KB to **14 KB**. That is close enough to the failure that produced a reboot
-/// loop (see docs/BACKLOG.md §1.3) to be worth designing out rather than monitoring.
-///
-/// Serialising makes the peak the cost of ONE handshake no matter how many plugins exist, which
-/// means adding the sixth integration cannot quietly reintroduce the crash. The cost is that a
-/// plugin may wait for another's request; with refresh intervals of 2 to 20 minutes against a 12 s
-/// timeout, that is a rare few seconds on a background task nobody is watching.
-///
-/// Held per ATTEMPT, not across the whole retry schedule: sleeping out a 14 s backoff while
-/// holding it would block every other plugin for the duration, which is a different bug.
-std::mutex& tlsGate() {
-    static std::mutex gate;
-    return gate;
 }
 
 /// Should this failure be tried again?
@@ -246,6 +251,115 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
     return ESP_OK;
 }
 
+/// Read buffer for streamGet(). Independent of any OTA-specific constant on purpose — this file
+/// has no reason to know that dash::cfg::kOtaChunkBytes happens to be the same number.
+constexpr size_t kStreamChunkBytes = 4096;
+
+/// Shares attemptGet()'s connection setup — credential/redirect policy, headers — but the read
+/// loop is fundamentally different (no destination buffer or size ceiling to fill, a sink call
+/// per chunk instead), so it is its own function rather than a shared one branching on a
+/// "streaming or not" flag partway through.
+esp_err_t attemptStreamGet(const HttpRequest& request, const char* safe_url,
+                          const HttpsClient::StreamSink& sink, HttpResponse& response) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = request.url;
+    cfg.timeout_ms = request.timeout_ms;
+    cfg.user_agent = userAgent();
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+
+    // Same redirect policy as attemptGet() — see the long comment there. OTA's manifest and
+    // image both currently carry no credential, so this branch is dormant for them today, but
+    // the rule is the same regardless of caller.
+    const bool carries_credential =
+        (request.bearer != nullptr && request.bearer[0] != '\0') ||
+        (request.header_value != nullptr && request.header_value[0] != '\0');
+    cfg.disable_auto_redirect = carries_credential;
+    cfg.max_redirection_count = carries_credential ? 0 : 3;
+
+    cfg.method = HTTP_METHOD_GET;  // streamGet() has no POST caller; add one if that ever changes
+    cfg.buffer_size_tx = 1024;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    char auth[512];
+    if (request.bearer != nullptr && request.bearer[0] != '\0') {
+        std::snprintf(auth, sizeof(auth), "Bearer %s", request.bearer);
+        esp_http_client_set_header(client, "Authorization", auth);
+    }
+    if (request.header_name != nullptr && request.header_value != nullptr) {
+        esp_http_client_set_header(client, request.header_name, request.header_value);
+    }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(kTag, "%s: connection failed: %s", safe_url, esp_err_to_name(err));
+        std::memset(auth, 0, sizeof(auth));
+        esp_http_client_cleanup(client);
+        return err;
+    }
+    std::memset(auth, 0, sizeof(auth));
+
+    esp_http_client_fetch_headers(client);
+    response.status = esp_http_client_get_status_code(client);
+
+    if (carries_credential && response.status >= 300 && response.status < 400) {
+        ESP_LOGW(kTag, "%s: refused to follow a %d redirect on a credentialled request",
+                 safe_url, response.status);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    if (response.status < 200 || response.status > 299) {
+        ESP_LOGW(kTag, "%s: HTTP %d", safe_url, response.status);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+
+    uint8_t chunk[kStreamChunkBytes];
+    size_t total = 0;
+    for (;;) {
+        const int read = esp_http_client_read(client, reinterpret_cast<char*>(chunk),
+                                              sizeof(chunk));
+        if (read < 0) {
+            ESP_LOGW(kTag, "%s: read failed after %u bytes", safe_url,
+                     static_cast<unsigned>(total));
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
+        }
+        if (read == 0) {
+            break;
+        }
+        if (!sink(chunk, static_cast<size_t>(read))) {
+            // The sink already knows why — a size mismatch against the manifest, a flash write
+            // failure — and has logged it. Nothing more to say here.
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
+        }
+        total += static_cast<size_t>(read);
+    }
+    response.length = total;
+
+    if (!esp_http_client_is_complete_data_received(client)) {
+        ESP_LOGW(kTag, "%s: connection dropped after %u bytes", safe_url,
+                 static_cast<unsigned>(total));
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    ESP_LOGD(kTag, "%s: HTTP %d, %u bytes streamed", safe_url, response.status,
+             static_cast<unsigned>(total));
+    return ESP_OK;
+}
+
 }  // namespace
 
 void redactUrl(const char* url, char* out, size_t capacity) {
@@ -306,6 +420,30 @@ esp_err_t HttpsClient::get(const HttpRequest& request, char* out, size_t capacit
         }
     }
     return err;
+}
+
+esp_err_t HttpsClient::streamGet(const HttpRequest& request, const StreamSink& sink,
+                                 HttpResponse& response) {
+    response = HttpResponse{};
+
+    if (request.url == nullptr || !sink) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (std::strncmp(request.url, "https://", 8) != 0) {
+        ESP_LOGE(kTag, "refusing a non-HTTPS URL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char safe_url[kLogUrlBytes];
+    redactUrl(request.url, safe_url, sizeof(safe_url));
+
+    // ONE attempt, deliberately, and held for the WHOLE call rather than per-attempt as get()'s
+    // loop does — see tlsGate()'s declaration in the header. Retrying a partial multi-megabyte
+    // download from byte zero is exactly what a failure here already costs; a caller wanting to
+    // retry the operation needs to reset the OTA partition write anyway (esp_ota_begin again), so
+    // that decision belongs at the OtaService layer, not duplicated here.
+    std::lock_guard<std::mutex> gate(tlsGate());
+    return attemptStreamGet(request, safe_url, sink, response);
 }
 
 }  // namespace dashboard::net

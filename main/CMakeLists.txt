@@ -9,6 +9,7 @@ idf_component_register(
         dashboard_core
         dashboard_storage
         dashboard_network
+        dashboard_ota
         # One component per dashboard page, from plugins/ (added to EXTRA_COMPONENT_DIRS by the
         # top-level CMakeLists.txt). Removing a plugin from the firmware is a one-line change
         # here plus deleting its directory — which is the property that makes "a failing

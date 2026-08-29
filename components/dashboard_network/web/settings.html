@@ -198,9 +198,37 @@
         key the quote is simply hidden. A free key comes from api-ninjas.com.
       </p>
 
+      <h2>Firmware updates</h2>
+      <label for="ota_manifest_url">Manifest URL</label>
+      <input id="ota_manifest_url" type="text" autocapitalize="off" spellcheck="false"
+             placeholder="https://.../manifest.json">
+      <label for="ota_channel">Channel</label>
+      <input id="ota_channel" type="text" autocapitalize="off" spellcheck="false"
+             placeholder="stable">
+      <label for="ota_automatic_install">Install automatically</label>
+      <select id="ota_automatic_install">
+        <option value="0">No — check only, I'll press Install</option>
+        <option value="1">Yes — install as soon as an update is found</option>
+      </select>
+      <p class="note">
+        Unauthenticated: the release host needs no credential, so this only works with a
+        manifest URL that is safe to fetch without one (a public repository's releases, or any
+        plain static host).
+      </p>
+
       <button type="submit" id="go">Save</button>
     </form>
     <div class="msg" id="msg"></div>
+
+    <h2>Update now</h2>
+    <p class="sub" id="ota-current">Running version &hellip;</p>
+    <p class="note" id="ota-status">Checking has not been run this session.</p>
+    <div id="ota-progress-wrap" hidden>
+      <progress id="ota-progress" max="100" value="0" style="width:100%"></progress>
+    </div>
+    <button type="button" class="secondary" id="ota-check-go">Check for updates</button>
+    <button type="button" class="secondary" id="ota-install-go" hidden>Install update</button>
+    <div class="msg" id="ota-msg"></div>
 
     <h2>Security</h2>
     <form id="pin-form" autocomplete="off">
@@ -318,6 +346,10 @@
 
     $('ms_tenant_id').value = s.ms_tenant_id || '';
     $('ms_client_id').value = s.ms_client_id || '';
+
+    $('ota_manifest_url').value = s.ota_manifest_url || '';
+    $('ota_channel').value = s.ota_channel || 'stable';
+    $('ota_automatic_install').value = s.ota_automatic_install ? '1' : '0';
     $('ms_signin_note').textContent = s.has_ms_signin
       ? 'Signed in.'
       : (s.ms_tenant_id && s.ms_client_id
@@ -435,7 +467,10 @@
       github_organisation: $('github_organisation').value,
       github_aliases: $('github_aliases').value,
       ms_tenant_id: $('ms_tenant_id').value,
-      ms_client_id: $('ms_client_id').value
+      ms_client_id: $('ms_client_id').value,
+      ota_manifest_url: $('ota_manifest_url').value,
+      ota_channel: $('ota_channel').value,
+      ota_automatic_install: $('ota_automatic_install').value
     })).then(function () {
       Dash.say('Saved.', 'ok');
       // Never leave a typed secret sitting in the DOM after it has been stored.
@@ -478,6 +513,81 @@
     }).catch(function (err) {
       $('pin-go').disabled = false;
       Dash.say(err.message, 'err', 'pin-msg');
+    });
+  });
+
+  // ---- firmware updates ------------------------------------------------------------------
+  //
+  // Polls rather than pushes, like every other status on this page: the device has no
+  // WebSocket and an install can outlive any one HTTP request anyway (the device may reboot
+  // mid-poll), so "ask again in a couple of seconds" is the only shape that survives that.
+  var otaTimer = null;
+
+  function stopOtaPolling() {
+    if (otaTimer) { clearInterval(otaTimer); otaTimer = null; }
+  }
+
+  function pollOtaStatus() {
+    Dash.get('/api/ota/status').then(function (s) {
+      $('ota-current').textContent = 'Running version ' + s.current_version;
+
+      var busy = s.state === 'checking' || s.state === 'downloading' ||
+                s.state === 'verifying' || s.state === 'applying';
+      $('ota-check-go').disabled = busy;
+
+      var showProgress = s.state === 'downloading' && s.bytes_total > 0;
+      $('ota-progress-wrap').hidden = !showProgress;
+      if (showProgress) {
+        $('ota-progress').value = Math.round((s.bytes_downloaded / s.bytes_total) * 100);
+      }
+
+      $('ota-install-go').hidden = s.state !== 'available';
+
+      var label = {
+        idle: 'Checking has not been run this session.',
+        checking: 'Checking for an update…',
+        up_to_date: s.message || 'Already up to date.',
+        available: s.message || ('Update available: ' + s.available_version),
+        downloading: 'Downloading…',
+        verifying: 'Verifying the download…',
+        applying: 'Installing — the device will restart shortly.',
+        failed: s.message || 'The update failed.'
+      }[s.state] || s.state;
+      $('ota-status').textContent = label;
+
+      // Stop polling once nothing is moving and there is nothing more to show — a fresh check
+      // or install is started explicitly by a button press, which restarts polling itself.
+      if (!busy) { stopOtaPolling(); }
+    }).catch(function () {
+      // Most likely the device is mid-reboot after a successful install. Keep polling silently
+      // rather than reporting a scary error for what is probably a success.
+    });
+  }
+
+  function startOtaPolling() {
+    stopOtaPolling();
+    pollOtaStatus();
+    otaTimer = setInterval(pollOtaStatus, 2000);
+  }
+
+  $('ota-check-go').addEventListener('click', function () {
+    $('ota-check-go').disabled = true;
+    $('ota-status').textContent = 'Checking for an update…';
+    Dash.postForm('/api/ota/check', {}).then(startOtaPolling).catch(function (err) {
+      $('ota-check-go').disabled = false;
+      Dash.say(err.message, 'err', 'ota-msg');
+    });
+  });
+
+  $('ota-install-go').addEventListener('click', function () {
+    if (!confirm('Install this update now? The device will restart automatically when it is ' +
+                'done.')) {
+      return;
+    }
+    $('ota-install-go').hidden = true;
+    $('ota-status').textContent = 'Starting the install…';
+    Dash.postForm('/api/ota/install', {}).then(startOtaPolling).catch(function (err) {
+      Dash.say(err.message, 'err', 'ota-msg');
     });
   });
 

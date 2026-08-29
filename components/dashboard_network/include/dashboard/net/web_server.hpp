@@ -74,11 +74,34 @@ class WebServer {
     /// replaced, and nothing would refetch until the next scheduled refresh or a reboot.
     using SecretsChanged = std::function<void()>;
 
+    /// A snapshot of OtaService's progress, in plain fixed-size fields rather than
+    /// dashboard::ota's own types — this component has no reason to depend on dashboard_ota just
+    /// to describe a status string and two byte counts.
+    struct OtaStatus {
+        char state[24] = "idle";
+        char available_version[32] = "";
+        char message[128] = "";
+        size_t bytes_downloaded = 0;
+        size_t bytes_total = 0;
+    };
+    using OtaStatusRead = std::function<void(OtaStatus& out)>;
+
+    /// Trigger a check or an install. Fire-and-forget — see OtaService's own header for why
+    /// these must never block the HTTP task for the real work's duration.
+    using OtaAction = std::function<void()>;
+
     struct Callbacks {
         WifiSubmit on_wifi;
         SettingsRead read_settings;
         SettingsWrite write_settings;
         SecretsChanged on_secrets_changed;
+
+        /// All three left null-checked at the call site: a build wired without OtaService (there
+        /// is none today, but the pattern costs nothing) simply reports OTA as unavailable rather
+        /// than crashing on an empty std::function.
+        OtaStatusRead read_ota_status;
+        OtaAction on_ota_check;
+        OtaAction on_ota_install;
     };
 
     /// Start serving. `wifi` supplies the network list and must outlive this object.
@@ -102,6 +125,10 @@ class WebServer {
     static esp_err_t handleSettingsGet(httpd_req_t* req);
     static esp_err_t handleSettingsPost(httpd_req_t* req);
     static esp_err_t handlePinPost(httpd_req_t* req);
+
+    static esp_err_t handleOtaStatus(httpd_req_t* req);
+    static esp_err_t handleOtaCheck(httpd_req_t* req);
+    static esp_err_t handleOtaInstall(httpd_req_t* req);
 
     static esp_err_t handleNotFound(httpd_req_t* req, httpd_err_code_t error);
 

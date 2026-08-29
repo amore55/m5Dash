@@ -38,6 +38,7 @@
 #include "dashboard/net/web_server.hpp"
 #include "dashboard/net/time_sync.hpp"
 #include "dashboard/net/wifi_manager.hpp"
+#include "dashboard/ota/ota_service.hpp"
 #include "dashboard/page_manager.hpp"
 #include "dashboard/storage/cache_store.hpp"
 #include "dashboard/storage/secret_store.hpp"
@@ -79,9 +80,11 @@ plugins::GithubPlugin g_github;
 
 plugins::CalendarPlugin g_calendar;
 
-dash::PlaceholderPlugin g_claude{"claude", "Claude usage",
-                                 "Five-hour and weekly allowance with a locally calculated "
-                                 "countdown to reset. Experimental - see docs/CLAUDE_USAGE.md."};
+// Claude usage removed for now (2026-08-24) — there is no public API for a personal Claude
+// subscription's usage, so the page was a placeholder with nothing to show. Settings::claude_*
+// fields are left in place rather than migrated away: they cost nothing unused, and the whole
+// point of leaving them is that reviving this needs no settings-schema work, only a plugin.
+// Telegram-based to-dos is the next thing planned for this slot — see docs/BACKLOG.md.
 
 dash::PlaceholderPlugin g_settings_page{"settings", "Settings",
                                    "Wi-Fi, location, integrations, display and firmware "
@@ -96,6 +99,7 @@ dashboard::storage::TaskStore g_tasks;
 dashboard::net::WifiManager g_wifi;
 dashboard::net::WebServer g_web;
 dashboard::net::TimeSync g_time;
+dashboard::ota::OtaService g_ota;
 
 /// Set by the portal when new credentials land, cleared by the supervisor when it acts on them.
 ///
@@ -149,8 +153,8 @@ void applyPageConfiguration() {
 
     // Enabled flags are applied per plugin. An empty enabled_pages list means "all", which
     // Settings::pageEnabled() already handles.
-    static const char* const kRotationIds[] = {"summary", "clock",   "weather", "elizabeth",
-                                               "github",  "calendar", "claude"};
+    static const char* const kRotationIds[] = {"summary", "clock",    "weather",
+                                               "elizabeth", "github", "calendar"};
     for (const char* id : kRotationIds) {
         g_pages.setEnabled(id, g_settings.pageEnabled(id));
     }
@@ -307,6 +311,40 @@ void startHealthTimer() {
     esp_timer_handle_t timer = nullptr;
     if (esp_timer_create(&args, &timer) == ESP_OK) {
         esp_timer_start_periodic(timer, kHealthReportPeriodUs);
+    }
+}
+
+/// How often an unattended check for firmware updates runs. Infrequent on purpose: an update
+/// appears rarely, this device has nothing useful to say about "checked 5 minutes ago" that it
+/// could not also say about "checked 6 hours ago", and checking rarely is also what makes it
+/// reasonable to point this at a real release host without asking permission each time.
+constexpr uint64_t kOtaCheckPeriodUs = 6ULL * 60ULL * 60ULL * 1000000ULL;
+
+/// Ask about an update, or install one outright, depending on Settings::ota_automatic_install.
+///
+/// requestInstall() is always the safe call to make here even when nothing is actually due: it
+/// re-fetches and re-classifies the manifest itself before touching anything, so calling it on a
+/// device that is already current just produces an UpToDate status and no download — see
+/// OtaService::doInstall(). That is what lets one timer serve both settings rather than needing
+/// separate "check" and "check-then-maybe-install" code paths.
+void otaTimerCb(void*) {
+    if (g_settings.ota_manifest_url.empty() || g_ota.busy()) {
+        return;
+    }
+    if (g_settings.ota_automatic_install) {
+        g_ota.requestInstall(g_settings.ota_manifest_url.c_str(), g_settings.ota_channel.c_str());
+    } else {
+        g_ota.requestCheck(g_settings.ota_manifest_url.c_str(), g_settings.ota_channel.c_str());
+    }
+}
+
+void startOtaTimer() {
+    esp_timer_create_args_t args = {};
+    args.callback = &otaTimerCb;
+    args.name = "ota_check";
+    esp_timer_handle_t timer = nullptr;
+    if (esp_timer_create(&args, &timer) == ESP_OK) {
+        esp_timer_start_periodic(timer, kOtaCheckPeriodUs);
     }
 }
 
@@ -472,6 +510,22 @@ void startWebServer() {
         ESP_LOGI(kTag, "a stored credential changed; refetching GitHub and the quote");
         g_github.refresh(/*force=*/true);
         g_clock.refresh(/*force=*/true);
+    };
+    callbacks.read_ota_status = [](dashboard::net::WebServer::OtaStatus& out) {
+        dashboard::ota::OtaProgress progress;
+        g_ota.getProgress(progress);
+        std::snprintf(out.state, sizeof(out.state), "%s", dashboard::ota::toString(progress.state));
+        std::snprintf(out.available_version, sizeof(out.available_version), "%s",
+                      progress.manifest.version.c_str());
+        std::snprintf(out.message, sizeof(out.message), "%s", progress.message.c_str());
+        out.bytes_downloaded = progress.bytes_downloaded;
+        out.bytes_total = progress.manifest.size;
+    };
+    callbacks.on_ota_check = [] {
+        g_ota.requestCheck(g_settings.ota_manifest_url.c_str(), g_settings.ota_channel.c_str());
+    };
+    callbacks.on_ota_install = [] {
+        g_ota.requestInstall(g_settings.ota_manifest_url.c_str(), g_settings.ota_channel.c_str());
     };
     g_web.start(g_wifi, callbacks);
 }
@@ -795,6 +849,10 @@ extern "C" void app_main(void) {
     g_settings_store.load(g_settings);
     applySettings(board);
 
+    if (g_ota.start() != ESP_OK) {
+        ESP_LOGW(kTag, "OTA service could not start; updates will be unavailable this boot");
+    }
+
     // Timezone comes from settings now, then the RTC. Doing it in this order means the restored
     // time is interpreted with British Summer Time applied from the very first render.
     if (board.rtc().attached()) {
@@ -807,7 +865,7 @@ extern "C" void app_main(void) {
     // because its tiles are built once from that list. Settings is excluded deliberately: it is
     // an overlay reached by long press, and a tile leading to it would make it a seventh page.
     static dashboard::DashboardPlugin* const kSummarised[] = {
-        &g_clock, &g_weather, &g_elizabeth, &g_github, &g_calendar, &g_claude};
+        &g_clock, &g_weather, &g_elizabeth, &g_github, &g_calendar};
     g_summary.setPages(kSummarised, sizeof(kSummarised) / sizeof(kSummarised[0]), &g_pages);
 
     initialisePlugin(g_summary);
@@ -816,7 +874,6 @@ extern "C" void app_main(void) {
     initialisePlugin(g_elizabeth);
     initialisePlugin(g_github);
     initialisePlugin(g_calendar);
-    initialisePlugin(g_claude);
     initialisePlugin(g_settings_page);
 
     {
@@ -833,7 +890,6 @@ extern "C" void app_main(void) {
         ESP_ERROR_CHECK(g_pages.add(&g_elizabeth, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_github, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_calendar, /*in_rotation=*/true));
-        ESP_ERROR_CHECK(g_pages.add(&g_claude, /*in_rotation=*/true));
         ESP_ERROR_CHECK(g_pages.add(&g_settings_page, /*in_rotation=*/false));
         g_pages.setOverlayPageId("settings");
         g_pages.setHomePageId("summary");
@@ -882,6 +938,14 @@ extern "C" void app_main(void) {
     startHealthTimer();
     // After the pages exist: the policy reads the gesture detector, which PageManager starts.
     startBacklightTimer();
+    startOtaTimer();
+
+    // CONFIRM THE BOOT ONLY HERE, not at the top of app_main(). Display, storage, settings and
+    // every page have all now initialised without a panic — that is the health signal that makes
+    // marking a freshly-flashed image valid meaningful. Confirming it before any of that ran would
+    // let a genuinely broken image cancel its own rollback before it had done anything to prove
+    // itself, which defeats the entire point of CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE.
+    dashboard::ota::confirmBootIfPending();
 
     // ---- Wi-Fi ------------------------------------------------------------------------
     //

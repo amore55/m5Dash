@@ -250,6 +250,69 @@ options differ a lot in what they cost, whether they need a SOAP client the devi
 run, and whether a relay would be needed. Given the ~28 KB internal-SRAM headroom (§1.3), a fourth
 HTTPS caller on this page is also worth measuring before committing to it.
 
+### Session of 24 August 2026 — calendar, OTA, Claude retired for now
+
+**Calendar (Today page): built, and the Entra ID app registration is still to be done.**
+The owner has confirmed they can self-register the app but has not done it yet. When they do,
+this is what goes on the settings page (`http://deskdashboard.local/settings` → "Calendar (Today
+page)"):
+
+1. Azure Portal → Microsoft Entra ID → App registrations → New registration.
+2. **Authentication** → Advanced settings → **turn ON "Allow public client flows."** Device-code
+   sign-in is a public-client flow and will not work without this.
+3. **API permissions** → Microsoft Graph → Delegated → add **`Calendars.Read`** and
+   **`offline_access`** → grant consent. NOT `Calendars.ReadBasic` — that scope specifically
+   excludes `location`, which is the room this page exists to show.
+4. Copy the **Application (client) ID** and the **tenant** (GUID or `*.onmicrosoft.com` domain)
+   into the two settings fields.
+
+Nothing else needed — device-code sign-in needs no client secret, and once both fields are saved
+the Today page itself shows a code and a URL to finish sign-in on a phone. Until then it correctly
+shows "add tenant + client ID" and does nothing (`ESP_ERR_INVALID_STATE`, verified on device, no
+crash). **The entire OAuth exchange — device code request, token poll, calendarview fetch — has
+never run against a real tenant** and is the thing to watch closely the first time it is tried.
+
+**Claude usage page removed** (not migrated away, just unregistered — see app_main.cpp). No public
+API exists for a personal Claude subscription's usage, so the page was a placeholder showing
+nothing. `Settings::claude_provider` / `claude_organisation_id` / `claude_relay_url` are left in
+NVS unused rather than cleaned up — reviving this later needs a plugin, not a settings migration.
+**Telegram-based to-dos is the agreed next occupant of that page slot** — `dashboard_storage`'s
+`TaskStore` was already built for exactly this and has never been wired to anything; that is the
+remaining piece.
+
+**OTA: built end-to-end, verified only up to the edge that needs a real release.** New
+`components/dashboard_ota` (manifest parsing + `OtaService`), `HttpsClient::streamGet()` (chunked
+download straight into `esp_ota_write()` while hashing, no size ceiling — see its own header for
+why that is safe), three new endpoints (`/api/ota/status|check|install`), and a settings-page
+"Firmware updates" section with live progress polling. Confirmed on device: clean boot, OTA
+worker task starts, `confirmBootIfPending()` runs its no-op path correctly on this ordinary
+(non-OTA) boot, no crash, 7 pages still built at 0 B internal SRAM.
+
+**Measured cost: internal SRAM low-water dropped to 47.9 KB** (from the ~65 KB range in the
+previous few sessions), because the OTA worker task's 16 KB stack — sized for the streaming
+chunk buffer plus the SHA-256 context — is, like every plugin worker, allocated from internal
+SRAM by `xTaskCreate`. Still comfortably above the ~14 KB level that previously caused a genuine
+reboot loop, but worth re-measuring before adding anything else that starts its own task.
+
+**NOTHING about the actual download-verify-apply path has been exercised.** There is no published
+release, no real `manifest.json` anywhere, and therefore no live test of: the manifest fetch, the
+GitHub-releases cross-host redirect (`objects.githubusercontent.com`, unauthenticated so the
+credential-redirect-refusal rule does not apply to it — confirmed by reading the code, not by
+trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
+`esp_restart()`. Before trusting this against a real firmware image:
+
+1. Publish a real `manifest.json` + `app.bin` (a GitHub Release is the design target) and confirm
+   `sha256`/`size` in the manifest match the actual built binary exactly — a mismatch here fails
+   *safely* (the device just refuses to apply it) but would be confusing to debug blind.
+2. Press "Check for updates" and confirm the settings page shows `UpdateAvailable` with the right
+   version.
+3. Press "Install update" and watch the progress bar move, then confirm the device reboots into
+   the new version and **stays up** — that last part is what actually exercises
+   `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE` and `confirmBootIfPending()`, which cannot be tested
+   any other way.
+4. Only then trust `ota_automatic_install`, which is off by default and calls the exact same
+   `requestInstall()` path unattended every six hours (`kOtaCheckPeriodUs`) once turned on.
+
 ### Pick up here
 
 **First, three small things left over from this session:**
