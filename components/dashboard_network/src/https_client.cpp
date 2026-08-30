@@ -85,6 +85,15 @@ uint32_t backoffMs(int attempt) {
 /// One attempt. Everything that can go wrong is reported; nothing is retried at this level.
 esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out, size_t capacity,
                      HttpResponse& response) {
+    // esp_http_client's OWN "Error parse url" diagnostic logs the request URL VERBATIM when it
+    // fails to parse — discovered when a malformed Telegram bot token (the token lives in the
+    // URL PATH, not a header) reached esp_http_client_init() below and its raw, credential-
+    // carrying URL was logged straight to the serial console. That happens inside IDF's own code,
+    // entirely bypassing redactUrl()/redactUrlHostOnly() further down this file, so the only way
+    // to close it is to silence the tag it logs under. Harmless to call every attempt: it is just
+    // a level lookup, and this tag has no other diagnostic this project relies on.
+    esp_log_level_set("HTTP_CLIENT", ESP_LOG_NONE);
+
     esp_http_client_config_t cfg = {};
     cfg.url = request.url;
     cfg.timeout_ms = request.timeout_ms;
@@ -140,6 +149,16 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
     if (request.header_name != nullptr && request.header_value != nullptr) {
         esp_http_client_set_header(client, request.header_name, request.header_value);
     }
+    // MUST be set before esp_http_client_open() below, not after: in this manual (open/write/
+    // read) mode, open() is the call that actually sends the request line and every header set
+    // so far — a header set afterwards affects nothing, because there is nothing left to attach
+    // it to. Found via a Telegram sendMessage POST coming back "HTTP 400": Telegram was receiving
+    // the form body with no Content-Type at all and rejecting it as malformed. This is the only
+    // POST caller in this project that has ever been exercised against a real server, so the same
+    // bug was very likely also silently in effect for the Microsoft OAuth token exchange's POST.
+    if (is_post) {
+        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+    }
 
     // Opened with the body length up front: esp_http_client's manual (open/write/read) mode needs
     // to know how much it will be asked to write, the same way it needs to know nothing extra for
@@ -156,7 +175,6 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
     std::memset(auth, 0, sizeof(auth));
 
     if (is_post) {
-        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
         const int written = esp_http_client_write(client, request.post_body, post_len);
         if (written != post_len) {
             ESP_LOGW(kTag, "%s: POST body did not write in full", safe_url);

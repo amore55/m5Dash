@@ -861,13 +861,11 @@ extern "C" void app_main(void) {
     }
 
     // The page reads the SAME TaskStore Telegram writes to — see tasks_plugin.hpp for why the
-    // page's own fetch() does no networking at all. Wired before g_telegram.start() so the
-    // very first command processed after boot still has somewhere to report a redraw to.
+    // page's own fetch() does no networking at all. Wired here, well before g_telegram.start()
+    // itself (which happens down in the Wi-Fi block below), so the very first command processed
+    // after boot still has somewhere to report a redraw to.
     g_tasks_page.setStore(&g_tasks);
     g_telegram.setOnChanged([] { g_tasks_page.notifyChanged(); });
-    if (g_telegram.start(g_tasks) != ESP_OK) {
-        ESP_LOGW(kTag, "Telegram service could not start; to-dos will be local-only this boot");
-    }
 
     // Timezone comes from settings now, then the RTC. Doing it in this order means the restored
     // time is interpreted with British Summer Time applied from the very first render.
@@ -973,6 +971,21 @@ extern "C" void app_main(void) {
     // Not fatal either. A device that cannot reach its radio still shows the clock, and the
     // setup portal is the recovery path for missing credentials.
     if (g_wifi.begin() == ESP_OK) {
+        // TelegramService runs its own independent worker loop — unlike every plugin above, whose
+        // fetch is only ever triggered once PageManager sees the network online — so it is
+        // started here, not with the rest of boot, specifically so its first getUpdates cannot
+        // fire before lwIP's own tcpip thread exists. It did once: with a syntactically valid
+        // token in place, esp_http_client's DNS lookup reached into lwIP before g_wifi.begin()
+        // had brought that up, and `tcpip_send_msg_wait_sem ... (Invalid mbox)` panicked the
+        // whole device — a hard crash, not a graceful "offline" failure, because the thing
+        // missing was lwIP's core rather than a live connection. g_wifi.begin() returning ESP_OK
+        // guarantees that core exists, even before any Wi-Fi network is actually joined; the
+        // usual "not connected yet" case beyond that is exactly the failure pollLoop()'s own
+        // backoff already handles.
+        if (g_telegram.start(g_tasks) != ESP_OK) {
+            ESP_LOGW(kTag, "Telegram service could not start; to-dos will be local-only this boot");
+        }
+
         g_wifi.setStateCallback([](dashboard::net::WifiState state, bool online) {
             ESP_LOGI(kTag, "network state: %s", dashboard::net::toString(state));
             // Cheap and atomic, so it is safe to do straight from the event task. The header

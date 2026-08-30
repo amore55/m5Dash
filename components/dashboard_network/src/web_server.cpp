@@ -8,6 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "dashboard/net/response_buffer.hpp"
 #include "dashboard/net/wifi_manager.hpp"
 #include "dashboard/storage/secret_store.hpp"
 #include "dashboard/time_utils.hpp"
@@ -391,40 +392,62 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     dashboard::storage::Settings s;
     self->callbacks_.read_settings(s);
 
-    // No secrets here, and none by accident either: secrets live in SecretStore and are not
-    // members of Settings, so there is nothing in this object that could leak.
-    char label[3 * 64];
-    char tz[3 * 128];
-    char face[3 * 32];
-    jsonEscape(s.weather_label.c_str(), label, sizeof(label));
-    jsonEscape(s.timezone.c_str(), tz, sizeof(tz));
-    jsonEscape(s.clock_style.c_str(), face, sizeof(face));
+    // Every escape/scratch buffer below, and the assembled JSON body, live in ONE PSRAM
+    // allocation rather than as separate locals on this handler's own stack frame. The HTTP
+    // server's task stack is a fixed, shared 8192 bytes (see startServer()) — this handler's
+    // buffers alone once added up to more than that on their own, which does not fail gracefully:
+    // it overflows the task's stack and takes the whole device down on every "Settings" page
+    // load, well before a response (even an error one) can be sent. See ResponseBuffer's own
+    // header for why big, short-lived buffers belong in PSRAM on this board generally.
+    struct Scratch {
+        // No secrets here, and none by accident either: secrets live in SecretStore and are not
+        // members of Settings, so there is nothing in this object that could leak.
+        char label[3 * 64];
+        char tz[3 * 128];
+        char face[3 * 32];
+        // Dim window as "HH:MM", which is what <input type="time"> both expects and submits.
+        char dim_start[8];
+        char dim_end[8];
+        // Sized for the escape buffers at their worst case rather than their realistic one:
+        // -Werror=format-truncation reasons about every %s being full and every %f being a
+        // 300-digit double, not about a place name and a latitude.
+        char github_user[3 * 32];
+        char github_org[3 * 32];
+        char github_aliases[3 * 192];
+        char ota_channel[3 * 32];
+        char ota_manifest_url[3 * 256];
+        char ms_tenant[3 * 64];
+        char ms_client[3 * 64];
+        // Sized for the escape buffers above at their worst case: jsonEscape can treble a string,
+        // and ota_manifest_url (a UrlString, 256 characters) alone is the largest at 768 out.
+        char body[4864];
+    };
+    ResponseBuffer scratch_buf(sizeof(Scratch));
+    if (!scratch_buf.valid()) {
+        return httpd_resp_send_500(req);
+    }
+    auto* scratch = reinterpret_cast<Scratch*>(scratch_buf.data());
 
-    // Dim window as "HH:MM", which is what <input type="time"> both expects and submits.
-    char dim_start[8];
-    char dim_end[8];
-    dashboard::timeutil::formatHhMm(dim_start, sizeof(dim_start), s.dim_start_minutes);
-    dashboard::timeutil::formatHhMm(dim_end, sizeof(dim_end), s.dim_end_minutes);
+    jsonEscape(s.weather_label.c_str(), scratch->label, sizeof(scratch->label));
+    jsonEscape(s.timezone.c_str(), scratch->tz, sizeof(scratch->tz));
+    jsonEscape(s.clock_style.c_str(), scratch->face, sizeof(scratch->face));
 
-    // Sized for the escape buffers above at their worst case rather than their realistic one:
-    // -Werror=format-truncation reasons about every %s being full and every %f being a 300-digit
-    // double, not about a place name and a latitude.
-    char github_user[3 * 32];
-    char github_org[3 * 32];
-    char github_aliases[3 * 192];
-    jsonEscape(s.github_username.c_str(), github_user, sizeof(github_user));
-    jsonEscape(s.github_organisation.c_str(), github_org, sizeof(github_org));
-    jsonEscape(s.github_aliases.c_str(), github_aliases, sizeof(github_aliases));
+    dashboard::timeutil::formatHhMm(scratch->dim_start, sizeof(scratch->dim_start),
+                                    s.dim_start_minutes);
+    dashboard::timeutil::formatHhMm(scratch->dim_end, sizeof(scratch->dim_end),
+                                    s.dim_end_minutes);
 
-    char ota_channel[3 * 32];
-    char ota_manifest_url[3 * 256];
-    jsonEscape(s.ota_channel.c_str(), ota_channel, sizeof(ota_channel));
-    jsonEscape(s.ota_manifest_url.c_str(), ota_manifest_url, sizeof(ota_manifest_url));
+    jsonEscape(s.github_username.c_str(), scratch->github_user, sizeof(scratch->github_user));
+    jsonEscape(s.github_organisation.c_str(), scratch->github_org, sizeof(scratch->github_org));
+    jsonEscape(s.github_aliases.c_str(), scratch->github_aliases,
+              sizeof(scratch->github_aliases));
 
-    char ms_tenant[3 * 64];
-    char ms_client[3 * 64];
-    jsonEscape(s.ms_tenant_id.c_str(), ms_tenant, sizeof(ms_tenant));
-    jsonEscape(s.ms_client_id.c_str(), ms_client, sizeof(ms_client));
+    jsonEscape(s.ota_channel.c_str(), scratch->ota_channel, sizeof(scratch->ota_channel));
+    jsonEscape(s.ota_manifest_url.c_str(), scratch->ota_manifest_url,
+              sizeof(scratch->ota_manifest_url));
+
+    jsonEscape(s.ms_tenant_id.c_str(), scratch->ms_tenant, sizeof(scratch->ms_tenant));
+    jsonEscape(s.ms_client_id.c_str(), scratch->ms_client, sizeof(scratch->ms_client));
 
     // Neither is a secret — see Settings::ms_tenant_id's comment — so both are read back plainly,
     // unlike the GitHub and quote credentials below.
@@ -445,10 +468,7 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
     const bool has_quote_key =
         dashboard::storage::SecretStore::has(dashboard::storage::Secret::QuoteApiKey);
 
-    // Sized for the escape buffers above at their worst case: jsonEscape can treble a string,
-    // and ota_manifest_url (a UrlString, 256 characters) alone is the largest at 768 out.
-    char body[4864];
-    std::snprintf(body, sizeof(body),
+    std::snprintf(scratch->body, sizeof(scratch->body),
                   "{\"ok\":true,\"weather_label\":\"%s\",\"latitude\":%.6f,\"longitude\":%.6f,"
                   "\"timezone\":\"%s\",\"clock_style\":\"%s\",\"show_seconds\":%s,"
                   "\"brightness\":%ld,\"night_brightness\":%ld,"
@@ -462,20 +482,23 @@ esp_err_t WebServer::handleSettingsGet(httpd_req_t* req) {
                   "\"ota_channel\":\"%s\",\"ota_manifest_url\":\"%s\","
                   "\"ota_automatic_install\":%s,"
                   "\"telegram_allowed_user_id\":%lld,\"has_telegram_token\":%s}",
-                  label, s.latitude, s.longitude, tz, face, s.show_seconds ? "true" : "false",
+                  scratch->label, s.latitude, s.longitude, scratch->tz, scratch->face,
+                  s.show_seconds ? "true" : "false",
                   static_cast<long>(s.brightness_percent),
-                  static_cast<long>(s.night_brightness_percent), dim_start, dim_end,
+                  static_cast<long>(s.night_brightness_percent), scratch->dim_start,
+                  scratch->dim_end,
                   static_cast<long>(dashboard::storage::kMinDayBrightnessPercent),
-                  s.display_flipped ? "true" : "false", github_user, github_org,
-                  github_aliases,
+                  s.display_flipped ? "true" : "false", scratch->github_user, scratch->github_org,
+                  scratch->github_aliases,
                   has_github_token ? "true" : "false",
                   has_github_work_token ? "true" : "false",
-                  has_quote_key ? "true" : "false", ms_tenant, ms_client,
-                  has_ms_signin ? "true" : "false", ota_channel, ota_manifest_url,
+                  has_quote_key ? "true" : "false", scratch->ms_tenant, scratch->ms_client,
+                  has_ms_signin ? "true" : "false", scratch->ota_channel,
+                  scratch->ota_manifest_url,
                   s.ota_automatic_install ? "true" : "false",
                   static_cast<long long>(s.telegram_allowed_user_id),
                   has_telegram_token ? "true" : "false");
-    return httpd_resp_sendstr(req, body);
+    return httpd_resp_sendstr(req, scratch->body);
 }
 
 esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {

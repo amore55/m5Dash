@@ -110,14 +110,17 @@ esp_err_t TelegramService::start(dashboard::storage::TaskStore& tasks) {
         len == sizeof(stored)) {
         next_update_id_ = stored;
     }
-    // 8 KB, matching this project's own convention for "a plugin that does a TLS handshake plus
-    // a parse" (see docs/BACKLOG.md §1.3). pollOnce()'s own frame carries a token(257) + url(420)
-    // + incoming text(512) + a built reply(1536) ≈ 2.7 KB, and the deepest nested call beneath it
-    // is handleMessage()'s /list branch — up to kListReplyMax Task records (~280 bytes each) on
-    // its own frame, ≈ 3.4 KB. sendReply()'s own frame is now just a short url[320] — its two big
-    // buffers moved to PSRAM via ResponseBuffer (see sendReply()), once they were the single
-    // largest permanent internal-SRAM cost of the whole feature.
-    const esp_err_t err = worker_.start("telegram", 8192);
+    // 16 KB. 8 KB — this project's usual convention for "a TLS handshake plus a parse" — was
+    // tried first and OVERFLOWED on a real device processing a real message: a genuine FreeRTOS
+    // stack-protection panic in the "telegram" task, not the separate internal-SRAM class of
+    // crash this feature also hit earlier. Every test up to that point had failed before ever
+    // reaching handleMessage() (no token, then a malformed one, then a network-ordering bug), so
+    // 8 KB had never actually been exercised against the real path — mbedTLS's own call depth
+    // during the handshake, on top of pollOnce()'s token/url/text/reply locals (~2.7 KB) and
+    // attemptGet()'s own auth[512] in https_client.cpp, added up to more than weather's plain
+    // 8 KB budget covers for a smaller set of locals. See the high-water-mark log below rather
+    // than re-deriving this by hand again.
+    const esp_err_t err = worker_.start("telegram", 16384);
     if (err != ESP_OK) {
         return err;
     }
@@ -224,6 +227,17 @@ esp_err_t TelegramService::pollOnce(dashboard::storage::TaskStore& tasks, char* 
 
         if (reply[0] != '\0') {
             sendReply(token, chat_id, reply, buffer, capacity);
+        }
+
+        // Logged once, not every message: this is the actual deepest path this task runs (a real
+        // message plus its reply), and the 16 KB budget above was sized by reasoning about it
+        // rather than measuring it — see that comment. Bytes REMAINING at the shallowest point
+        // FreeRTOS happened to sample, so a low number here is real headroom eaten, not noise.
+        static bool logged_high_water = false;
+        if (!logged_high_water) {
+            logged_high_water = true;
+            ESP_LOGI(kTag, "stack headroom after a real message: %u B remaining",
+                    static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
         }
     }
 

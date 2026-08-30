@@ -238,12 +238,33 @@ void TasksPlugin::onDeleteTapped(size_t row_index) {
         return;
     }
 
-    // Second tap within the window: actually delete.
+    // Second tap within the window: drop it from the screen right now, rather than waiting for
+    // the worker to persist the removal and the next reconcile to pick it up — a visible pause
+    // after a confirmed tap reads as broken, not busy. The worker's own removal below still runs;
+    // if it somehow fails, the next reconcile finds the task still in the store and the row
+    // simply comes back, which is the correct, honest outcome for a persist that didn't happen.
     armed_delete_id_.clear();
     if (store_ == nullptr) {
         return;
     }
     dashboard::FixedString<24> id = row.task_id;
+    {
+        std::lock_guard<std::mutex> lock(modelMutex());
+        for (size_t i = 0; i < rows_count_; ++i) {
+            if (id.equals(rows_snapshot_[i].id.c_str())) {
+                for (size_t j = i; j + 1 < rows_count_; ++j) {
+                    rows_snapshot_[j] = rows_snapshot_[j + 1];
+                }
+                --rows_count_;
+                if (total_open_ > 0) {
+                    --total_open_;
+                }
+                break;
+            }
+        }
+        renderList(rows_snapshot_, rows_count_, total_open_);
+    }
+
     TasksPlugin* self = this;
     dashboard::storage::TaskStore* store = store_;
     postToWorker([self, store, id]() {
