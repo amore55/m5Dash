@@ -315,7 +315,20 @@ trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
 
 ### Pick up here
 
-**First, three small things left over from this session:**
+**Most urgent, from 30 August — finish verifying OTA, and keep watching §1.3:**
+
+1. **Retry "Check for updates" against the published `v0.1.0` release, then actually press
+   Install and watch it through a reboot.** The redirect fix is confirmed working (a fresh TLS
+   handshake to `release-assets.githubusercontent.com` was observed, and the declared
+   `content_length` for that fetch was small and plausible) but the session's final §1.3 crash
+   landed before `UpdateAvailable` / the install / the post-reboot `confirmBootIfPending()` cycle
+   could be confirmed. See that session's entry for the full context.
+2. **§1.3 is not closed.** It recurred once more, unprompted, during an ordinary boot-time fetch
+   burst, after every fix tried across 29 and 30 August. Re-measure the internal low-water mark
+   (the existing `health:` log line) across several cold boots before trusting any change here —
+   a single clean boot is not evidence the margin is safe.
+
+**Then, three smaller things left over from the 24 August session:**
 
 1. **Look at the Elizabeth line page and say whether the layout works.** Its data path is verified
    from the serial log; the arrangement is arithmetic on paper. Same caveat as the weather page had.
@@ -337,10 +350,10 @@ the time, the line status without detail, the Claude percentage. It needs `summa
 now exist to summarise, which is what it was waiting for.
 
 ~~Then, in order: to-dos (Telegram) → Claude → OTA.~~ Done, in a different order — OTA and Claude's
-retirement 24 August, to-dos 29 August. See that session's entry below.
+retirement 24 August, to-dos built 29 August and live-tested 30 August. See those sessions' entries.
 
-**Before to-dos or Claude, read §1.3 and close known gap 2** — those are the first plugins to carry
-a bearer token, and `Authorization` is not currently stripped across a cross-host redirect.
+~~Before to-dos or Claude, read §1.3 and close known gap 2~~ — closed 30 August, see the known-gaps
+list above.
 
 ### Decisions taken this session (do not reopen without a reason)
 
@@ -356,14 +369,18 @@ a bearer token, and `Authorization` is not currently stripped across a cross-hos
 
 ### Known gaps, in rough priority order
 
-1. **Internal SRAM headroom is thin — about 28 KB at the low-water mark with three pages.** See
-   §1.3 for the full measured table. This is the constraint most likely to bite next, and it bites
-   as a panic in an unrelated component rather than as an allocation failure where the memory was
-   spent. Each further plugin costs ~8 KB of worker stack before it fetches anything.
-2. **`Authorization` is not stripped across a redirect.** `esp_http_client` follows redirects and
-   nothing removes the header if the redirect crosses hosts. Close this before the first
-   credentialled API (Telegram, Claude) ships. Not urgent for Open-Meteo or TfL, neither of which
-   uses a bearer token.
+1. **Internal SRAM headroom is thin and STILL recurs — not just a historical measurement.** See
+   §1.3 and the 29 and 30 August sessions: it happened again on 30 August, unprompted, during an
+   ordinary boot-time fetch burst, after every fix tried up to that point. It bites as a panic in
+   an unrelated component (`esp_hosted`'s SDIO driver) rather than as an allocation failure where
+   the memory was spent. Each further plugin costs ~8 KB of worker stack before it fetches
+   anything. Do not treat a clean boot as proof the margin is safe — re-measure across several
+   cold boots before trusting a change here.
+2. ~~`Authorization` is not stripped across a redirect.~~ **Closed 30 August**: `esp_http_client`'s
+   own redirect-following turned out to never run at all in this codebase (see that session's
+   entry — `process_again` is only consulted inside `esp_http_client_perform()`, never called
+   here), so this was moot the way it was originally framed. Redirects are now followed BY HAND in
+   `attemptGet()`/`attemptStreamGet()`, and the credentialled-request refusal is enforced there.
 3. **No captive-portal DNS hijack**, so the setup page has to be typed rather than popping up.
 4. **`components/dashboard_core/src/theme.cpp` and `web/style.css` duplicate the palette.** Change
    one, change the other.
@@ -459,6 +476,112 @@ device. Before trusting this: create a bot via @BotFather, set the token and you
 id (from @userinfobot or similar) on the settings page, then work through all six commands from a
 real chat and confirm `/list`'s short-id resolution, the full-vs-short id fallback in
 `TaskStore::findIndexLocked`, and that a message from any OTHER Telegram account is truly ignored.
+
+### Session of 30 August 2026 — the Telegram bot went live, and OTA's first real test found three more bugs
+
+**The Telegram bot is now genuinely live-tested, closing out 29 August's last open item.** A real
+bot token and user id were set on the settings page; a plain message was received, added as a
+task, and confirmed both on the device's `tasks` page and as a reply in the chat; `/delete`'s
+double-tap confirm now removes the row from the screen immediately rather than waiting for the
+next background reconcile (it edits `rows_snapshot_` and re-renders inline, then lets the
+worker's persist run behind that). None of this worked on the first try — three separate crashes
+turned up in the process, each a real bug, none of them in `TelegramService` itself:
+
+1. **Loading the Settings page crashed the device outright.** `handleSettingsGet()`'s own locals
+   (the escape buffers for every string field, plus the assembled JSON body) added up to more
+   than the HTTP server task's 8 KB stack, which does not fail gracefully — it overflows and
+   takes the whole device down before a response, even an error one, can be sent. Fixed the same
+   way §1.3 already established for HTTPS response buffers: one PSRAM allocation
+   (`ResponseBuffer`) holding all of it, referenced through a local `Scratch` struct.
+2. **`TelegramService` started polling before Wi-Fi/lwIP existed.** `g_telegram.start()` was
+   called early in `app_main()`, well before `g_wifi.begin()` — harmless while the stored bot
+   token was malformed (the request never got past `esp_http_client_init()`'s own URL parse), but
+   once a syntactically valid token was saved, `pollOnce()`'s first `getUpdates` reached into
+   `esp_http_client_open()` before lwIP's tcpip thread existed, and
+   `tcpip_send_msg_wait_sem ... (Invalid mbox)` panicked the device. Moved `g_telegram.start()`
+   to run only after `g_wifi.begin()` returns `ESP_OK` — that guarantees lwIP's core exists, even
+   before any network is actually joined, which is all this needed.
+3. **Telegram's worker stack, "right-sized" to 8192 B on 29 August, still overflowed on a REAL
+   message.** Every test before this session failed earlier in the chain (no token, a malformed
+   one, the ordering bug above), so 8192 B had never actually been exercised against
+   `handleMessage()` + `sendReply()` together — a genuine FreeRTOS stack-protection panic in the
+   "telegram" task. Bumped to 16384 B and, rather than re-deriving the real number by hand again,
+   added a one-time `uxTaskGetStackHighWaterMark()` log after the first real message: **7472 B
+   free out of 16384**, i.e. roughly 8.9 KB actually used. That number, not another guess, is
+   what the next attempt to shrink this should start from.
+
+**A fourth bug, unrelated to Telegram: `HttpsClient`'s POST path has silently sent no
+`Content-Type` since the day it was written.** `esp_http_client_set_header(client,
+"Content-Type", ...)` was called AFTER `esp_http_client_open()`, which is the call that actually
+sends the request line and every header set so far in this manual (open/write/read) mode — a
+header set afterwards attaches to nothing. Telegram's `sendMessage` was the first POST caller
+ever exercised against a real server and came back `HTTP 400`; the Microsoft OAuth token exchange
+(`graph_calendar_provider.cpp`) uses the same POST path and has never been tested against a real
+tenant, so it was very likely silently broken the same way. Fixed by moving the header-set before
+`esp_http_client_open()`.
+
+**Then OTA's first real test surfaced the biggest finding of the session: redirects have never
+actually been followed, for ANY request, ever.** `cfg.disable_auto_redirect` /
+`cfg.max_redirection_count` — the whole redirect policy §1.3's "known gap 2" and this file's own
+comments described — do nothing in this codebase, because `esp_http_client`'s automatic
+redirect-following (`process_again` / `redirect_counter`) is only consulted inside
+`esp_http_client_perform()`'s own loop (its source comments `process_again` itself: "used only in
+the blocking mode"). `HttpsClient` has never called `perform()` — every request uses the manual
+`open()`/`fetch_headers()`/`read()` sequence, needed for a caller-supplied destination buffer and
+(in `streamGet()`) true streaming. This was invisible until GitHub's release-asset hosting was
+tested: `github.com/OWNER/REPO/releases/download/TAG/FILE` unconditionally 302s to a signed,
+per-request `release-assets.githubusercontent.com` URL, and what OTA's `fetchManifest()` read
+back as "the manifest" was actually github.com's own redirect landing page (measured at 304,959
+bytes against an 8 KB buffer — nowhere near the real ~300-byte manifest).
+
+Fixed by following redirects BY HAND in both `attemptGet()` and `attemptStreamGet()`: each is now
+a bounded loop (`kMaxRedirects = 5`) that, on a 3xx, reads the `Location` header, closes the old
+client, and opens a fresh one against it — a new host needs a new TLS session (a new SNI) anyway,
+so there was never a cheaper way to do this. The credentialled-request redirect refusal from
+§1.3's "known gap 2" is preserved exactly, just enforced by this loop now instead of a config flag
+that never worked. The Location header value is deliberately never logged, matching the existing
+"don't log the query string" rule for TfL, tightened here because GitHub's own redirect Location
+is itself a signed, session-scoped credential. The `Location` buffer (measured over 1 KB for a
+real GitHub redirect, including its embedded JWT) comes from PSRAM
+(`ResponseBuffer`), not a plugin worker's stack — a rare 2 KB stack add-on for every caller of
+`attemptGet`/`attemptStreamGet`, used or not, is exactly the kind of cost this file already says
+to measure rather than assume away.
+
+**A fifth bug, found chasing the fourth: `board.setDisplayFlipped()`'s deep MIPI-DSI
+reconfiguration runs on the HTTP server's OWN task.** `applyEditedSettings()` (the
+`write_settings` callback) calls straight into `applySettings()` → `board.setDisplayFlipped()`
+synchronously, on whichever task is handling the POST — fine at boot, where `board.init()` has
+the main task's whole 8 KB to itself, but `handleSettingsPost()`'s own locals (the form body, a
+field-scratch buffer, a secret buffer, a full `Settings` copy) were already spending a comparable
+amount before that call even started. Saving a settings form that flips the orientation panicked
+the httpd task the same way (1) did. **First attempt — raising `cfg.stack_size` to 16384 — was
+wrong and reverted**: it fixed this crash but cost enough permanent internal SRAM to reproduce
+§1.3's DMA/SDIO crash on the very next boot. The actual fix, kept: move `handleSettingsPost()`'s
+own big locals to PSRAM (the same `Scratch`-struct-in-one-`ResponseBuffer` pattern as (1), plus a
+placement-newed `Settings` referenced through a reference so every existing `edited.field` call
+site needed no change), which frees enough of the httpd task's own 8 KB that the display
+reconfiguration fits inside the ORIGINAL budget with room to spare. `cfg.stack_size` is back at
+8192.
+
+**§1.3 is still not fully closed — it recurred once more near the end of this session**, during
+an ordinary boot-time fetch burst unrelated to any of the five bugs above (not during a settings
+save, not during an OTA check). Internal low-water measurements across this session's many
+reboots ranged from the mid-30s to high-40s KB — healthier on average than 29 August's session
+ended, but evidently still capable of tipping over depending on exactly how several plugins'
+first-boot TLS handshakes happen to interleave. **This is the single most important thing to
+watch next**, not a one-off: the margin is thin enough that it is not yet safe to assume any
+given boot will be clean.
+
+**OTA itself: genuine progress, still not fully verified end to end.** A real `v0.1.0` GitHub
+Release was published (tag pushed, `tab5-desk-dashboard.bin` + `manifest.json` as release assets)
+specifically to test against. After the redirect fix, "Check for updates" correctly followed the
+github.com → release-assets.githubusercontent.com hop (confirmed by a fresh TLS handshake to the
+new host in the log) and the declared `content_length` for that fetch read a small, plausible
+number consistent with the real manifest — but the session's final §1.3 crash landed moments
+later and the actual `UpdateAvailable` / install / reboot / `confirmBootIfPending()` cycle was
+never confirmed. **Next session: retry "Check for updates" fresh, confirm it reports `0.1.0
+available`, then actually press Install and watch it through a reboot.** The release only proves
+the redirect fix; it does not yet prove the install path.
 
 ### A wanted feature, captured before it is forgotten
 
@@ -704,6 +827,23 @@ Related, found at the same time: esp_http_client's default 512-byte request buff
 for these APIs** and logged `E HTTP_HEADER: Buffer length is small to fit all the headers` on every
 fetch. Open-Meteo's forecast URL is ~500 characters because it names every variable it wants.
 `HttpsClient` now sets `buffer_size_tx = 1024`.
+
+**Update, 29–30 August: `CONFIG_MBEDTLS_DYNAMIC_BUFFER=y` is now on, and it was not enough on its
+own.** This crash reproduced twice more after Telegram/tasks and OTA were added — once from their
+combined permanent worker-stack cost (fixed by moving big buffers off those stacks rather than
+raising anything), and once more on 30 August, unprompted, during an ordinary boot-time fetch
+burst, after every other fix in this section had already landed. Internal low-water measurements
+across many cold boots that session ranged from the mid-30s to high-40s KB — an improvement on
+average, but evidently still capable of tipping over. **Treat this section's fixes as raising the
+odds of a clean boot, not as having closed the crash class.** A single clean boot proves nothing;
+re-measure across several before trusting a change here. Also confirmed the same session: a
+web/HTTP server task's own request-handling locals are subject to the exact same "budget it, don't
+guess" rule as a plugin worker's — two separate stack overflows in `dashboard_network/web_server.cpp`
+(one in the settings GET handler, one in the POST handler triggered by a display-orientation
+change reaching into the board's own MIPI-DSI reconfiguration) were fixed by moving THAT task's own
+big locals to PSRAM, the same tool, not by raising `cfg.stack_size` — raising it once did fix the
+immediate crash but cost enough permanent internal SRAM to reproduce this section's crash on the
+very next boot.
 
 ---
 

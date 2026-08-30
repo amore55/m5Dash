@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -512,19 +513,36 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
         return httpd_resp_send_500(req);
     }
 
-    char body[kMaxFormBytes + 1];
+    // body, text, secret and edited all come from PSRAM rather than this task's own stack — see
+    // startServer()'s cfg.stack_size comment for why: this handler's own locals used to leave too
+    // little of the task's 8 KB for the deep display-reconfiguration call write_settings() can
+    // trigger below. Each is bound to a REFERENCE of the array/struct type it used to be, so
+    // every existing sizeof(...) and field access below is unchanged.
+    ResponseBuffer body_buf(kMaxFormBytes);
+    ResponseBuffer text_buf(255);
+    ResponseBuffer secret_buf(dashboard::storage::kMaxSecretLength);
+    ResponseBuffer settings_buf(sizeof(dashboard::storage::Settings));
+    if (!body_buf.valid() || !text_buf.valid() || !secret_buf.valid() || !settings_buf.valid()) {
+        return httpd_resp_send_500(req);
+    }
+    char(&body)[kMaxFormBytes + 1] = *reinterpret_cast<char(*)[kMaxFormBytes + 1]>(body_buf.data());
+    char(&text)[256] = *reinterpret_cast<char(*)[256]>(text_buf.data());
+    char(&secret)[dashboard::storage::kMaxSecretLength + 1] =
+        *reinterpret_cast<char(*)[dashboard::storage::kMaxSecretLength + 1]>(secret_buf.data());
+    std::memset(secret, 0, sizeof(secret));
+    dashboard::storage::Settings& edited =
+        *(new (settings_buf.data()) dashboard::storage::Settings());
+
     if (!readForm(req, body, sizeof(body))) {
         return ESP_FAIL;
     }
 
     // Seeded from the current settings, so a form that carries only some fields changes only
     // those. This page does not know about OTA channels or Telegram, and must not erase them.
-    dashboard::storage::Settings edited;
     self->callbacks_.read_settings(edited);
 
     // Must hold the largest text field, which is now github_aliases at 192 characters. Sized
     // above it so a full-length list is not clipped by one byte.
-    char text[256];
     if (findFormField(body, "weather_label", text, sizeof(text)) && text[0] != '\0') {
         edited.weather_label.assign(text);
     }
@@ -602,7 +620,6 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
     // without retyping a token does not wipe it; an explicitly EMPTY field clears it, which is
     // the only way to remove one without a factory reset.
     bool secrets_changed = false;
-    char secret[dashboard::storage::kMaxSecretLength + 1] = {};
     if (findFormField(body, "github_token", secret, sizeof(secret))) {
         const esp_err_t stored =
             dashboard::storage::SecretStore::set(dashboard::storage::Secret::GithubToken, secret);
@@ -654,6 +671,17 @@ esp_err_t WebServer::handleSettingsPost(httpd_req_t* req) {
                              "The dashboard could not save those settings.");
     }
     ESP_LOGI(kTag, "settings updated from the web page");
+
+    // Logged once, not every save: write_settings() is the deepest call this task ever makes —
+    // see cfg.stack_size's own comment on why a display-orientation change in particular panicked
+    // this task with a genuine stack overflow. 16 KB was reasoned about the same way Telegram's
+    // stack once was, not measured; this is the real number instead of another guess.
+    static bool logged_high_water = false;
+    if (!logged_high_water) {
+        logged_high_water = true;
+        ESP_LOGI(kTag, "httpd stack headroom after a settings save: %u B remaining",
+                static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr) * sizeof(StackType_t)));
+    }
 
     // AFTER the settings write, so a plugin refetching on a new credential also sees any changed
     // configuration that arrived in the same POST.
@@ -801,6 +829,15 @@ esp_err_t WebServer::start(WifiManager& wifi, Callbacks callbacks) {
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port = 80;
     // The scan handler puts a ScanResult array and the JSON assembly buffers on this stack.
+    //
+    // Kept at the original 8 KB rather than raised: saving settings that flip the display
+    // orientation used to panic this task with a stack-protection fault — applyEditedSettings()
+    // calls straight into board.setDisplayFlipped(), which reconfigures the LCD panel over the
+    // same deep MIPI-DSI call chain board.init() uses at boot (fine there, on a task with this
+    // whole budget to itself) — because handleSettingsPost()'s OWN locals were already spending a
+    // comparable amount before that call even started. Raising this instead of fixing that first
+    // cost enough permanent internal SRAM to reproduce docs/BACKLOG.md §1.3's boot-time crash.
+    // See handleSettingsPost() for the actual fix: its big locals now come from PSRAM.
     cfg.stack_size = 8192;
     cfg.max_uri_handlers = 16;  // 10 existing + 3 OTA + headroom
     // A browser opens several sockets for one page. Recycle the oldest rather than refusing a
