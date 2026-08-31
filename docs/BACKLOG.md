@@ -335,13 +335,14 @@ saying no. Give it a rest, then finish verifying the install:**
    settings page, the Install button, the download progress, or the post-reboot
    `confirmBootIfPending()` confirmation — every attempt so far has been blocked by either the
    404 above or a §1.3 crash landing first.
-3. **§1.3 is measurably better but still not closed.** Telegram's worker stack was cut from
-   16 KB to 12 KB this session (16 KB was reasoned about, never measured; the high-water-mark log
-   from 30 August showed only ~8.9 KB actually used) and the internal low-water mark on a clean
-   boot afterwards reached ~41 KB — the best figure measured all session, versus repeated crashes
-   in the low-to-mid 30s KB range beforehand on the SAME build before that one change. That is
-   good evidence this genuinely helped, not proof the margin is now safe. Re-measure across
-   several cold boots before trusting it further, and see §1.3 itself for the running account.
+3. **§1.3 is now precisely diagnosed, still not closed.** Telegram's worker stack was cut from
+   16 KB to 12 KB this session, reclaiming real permanent headroom (measured, not guessed — see
+   §1.3's second entry). Later the same night, heap tracing pinned the crash to fragmentation of
+   the specific 32 KB `SPIRAM_MALLOC_RESERVE_INTERNAL` pool, driven by hardware crypto's temporary
+   internal copies of PSRAM-resident TLS buffers — see §1.3's third entry for the full mechanism
+   and what was tried. **A real fix needs a dedicated, non-fragmenting allocator for that pool,
+   not another config toggle** — worth scoping properly as its own task rather than another
+   late-night experiment. Re-measure across several cold boots before trusting any change here.
 
 **Then, three smaller things left over from the 24 August session:**
 
@@ -384,13 +385,17 @@ list above.
 
 ### Known gaps, in rough priority order
 
-1. **Internal SRAM headroom is thin and STILL recurs — not just a historical measurement.** See
-   §1.3 and the 29 and 30 August sessions: it happened again on 30 August, unprompted, during an
-   ordinary boot-time fetch burst, after every fix tried up to that point. It bites as a panic in
-   an unrelated component (`esp_hosted`'s SDIO driver) rather than as an allocation failure where
-   the memory was spent. Each further plugin costs ~8 KB of worker stack before it fetches
-   anything. Do not treat a clean boot as proof the margin is safe — re-measure across several
-   cold boots before trusting a change here.
+1. **Now precisely diagnosed (31 August): it is fragmentation of a specific 32 KB reserved pool,
+   not raw exhaustion — see §1.3's third entry for the full mechanism.** `heap_caps_get_
+   largest_free_block(MALLOC_CAP_DMA)` gets stuck at ~3 KB while ~12 KB is nominally free; a
+   single TLS handshake makes hundreds of small, all-correctly-freed (not leaked) DMA-capable
+   allocations, because hardware SHA/AES has to make a temporary internal copy of every
+   PSRAM-resident buffer it touches — a direct consequence of mbedTLS being routed to PSRAM at
+   all, which was itself the correct fix for an EARLIER, different §1.3 crash. Disabling hardware
+   crypto measurably helped but did not close it and cost real latency; reverted. Still open — a
+   real fix needs a non-fragmenting allocator scoped to that specific pool, which is real, scoped
+   work, not another config toggle. Do not treat a clean boot as proof the margin is safe —
+   re-measure across several cold boots before trusting a change here.
 2. ~~`Authorization` is not stripped across a redirect.~~ **Closed 30 August**: `esp_http_client`'s
    own redirect-following turned out to never run at all in this codebase (see that session's
    entry — `process_again` is only consulted inside `esp_http_client_perform()`, never called
@@ -638,6 +643,93 @@ same session (a real 302, a fresh TLS handshake to the new host, a correctly sma
 **Net effect: the redirect-following fix is now considered proven, not just plausible.** What
 remains unverified is only the install/reboot half of OTA, blocked tonight by the two problems
 above rather than by anything wrong with 30 August's fix. See "Pick up here" for what to do next.
+
+### §1.3, part 3 — the crash is fragmentation, not exhaustion, of a 32 KB pool shared with Wi-Fi
+
+**Still the same night (31 August), continued.** With the redirect fix and GitHub's rate limit no
+longer in the way, this went looking for §1.3's actual mechanism instead of continuing to guess at
+its symptoms. The device already reports internal SRAM in the tens of KB free at every crash, which
+never squared with "not enough heap memory" — so the real question was never "how much is free",
+it was "free in what shape".
+
+**Instrumented `attemptGet()` and `HttpsClient::get()`** (temporarily — none of this survives in
+the tree, see below) with `heap_caps_get_free_size`/`heap_caps_get_largest_free_block` around every
+gated TLS attempt, and standalone heap tracing (`heap_trace_start(HEAP_TRACE_ALL)`) across
+`esp_http_client_open()` specifically, filtered to `MALLOC_CAP_DMA` records. Two findings, in order:
+
+1. **`heap_caps_get_largest_free_block(MALLOC_CAP_DMA)` was the real number, and it told a
+   completely different story than total free bytes.** With ~12 KB of DMA-capable memory nominally
+   free, the largest contiguous block was measured stuck at exactly **3072 bytes**, run after run,
+   after a boot's worth of handshakes. That is fragmentation, not exhaustion — plenty of memory,
+   none of it in one piece. `esp_psram: Reserving pool of 32K of internal memory for DMA/internal
+   allocations` at every boot names the actual arena: `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768`,
+   a small, fixed pool that Wi-Fi/SDIO's own DMA buffers and anything else needing true
+   internal+DMA-capable memory all draw from.
+2. **The heap trace showed why: 200–900+ small DMA-capable allocations per single TLS handshake,
+   every one of them correctly freed (`0 bytes alive in trace`, every time — this is not a leak).**
+   Read `components/mbedtls/port/esp_mem.c`: with `MBEDTLS_EXTERNAL_MEM_ALLOC` on (it has been all
+   along, §1.3's own original fix), mbedTLS's OWN `calloc`/`free` already redirects unconditionally
+   to `MALLOC_CAP_SPIRAM` — no exceptions, regardless of size. The DMA-capable allocations are not
+   coming from mbedTLS's general heap use at all. They come from ESP-IDF's hardware SHA/AES driver
+   (`components/mbedtls/port/sha/dma/sha.c`, `.../aes/dma/esp_aes_dma_core.c`): the crypto
+   accelerator peripheral can only DMA to/from internal memory, so every time it needs to hash or
+   cipher a buffer that now lives in PSRAM — which, per finding 1, is *all* of them — the driver
+   allocates a temporary internal+DMA copy, uses it, frees it. One handshake makes many such calls
+   (certificate signature checks, HMACs, key derivation, each response chunk), and each is a
+   different size. Two structural fixes from earlier sessions collided: routing mbedTLS to PSRAM
+   (the original, correct §1.3 fix, which stopped a straightforward exhaustion crash) created the
+   *precondition* for this one — hardware crypto now has to keep making temporary internal copies
+   of PSRAM data it never used to need copies of.
+
+**Tried, measured, and reverted: disabling `MBEDTLS_HARDWARE_SHA`/`MBEDTLS_HARDWARE_AES`.**
+Software crypto doesn't need a DMA-capable copy at all — it operates on the PSRAM buffer directly —
+and the largest-free-block figures were consistently better immediately afterwards (roughly double,
+across three separate comparable measurements). But over a longer run it **still fragmented down
+far enough to crash twice in 90 seconds**, just somewhat later, and the cost is real and certain:
+software SHA is measurably slower (a fetch that resolved in under a second with hardware
+acceleration took ~5 seconds without it). A partial, uncertain improvement bought with a certain,
+permanent latency cost was judged not worth keeping. **Reverted — hardware SHA/AES/GCM/MPI/ECC are
+back on, matching every other session's testing.**
+
+**Also tried, and also reverted: the CA certificate bundle, `_FULL` → `_CMN` (common).** ~50 KB
+smaller in flash, and validation re-confirmed working for TfL, Open-Meteo and `api.github.com`
+specifically — but NOT re-confirmed for `api.telegram.org` (its handshake never actually
+completed during that test window, a DNS timing issue unrelated to certificates) or for
+`release-assets.githubusercontent.com` (OTA's actual download host). `sdkconfig.defaults` already
+carries a deliberate, reasoned comment for why `_FULL` was chosen — naming these exact hosts and
+noting their roots are "not all in the common subset" — from back when Telegram and the OTA path
+were first added. Overriding that on partial evidence would have been the same mistake as almost
+lowering `SPIRAM_MALLOC_ALWAYSINTERNAL` earlier the same night: a plausible-looking win that
+contradicts an already-reasoned-out decision, without having actually re-tested the specific case
+that decision was protecting against. **Reverted to `_FULL`.** Also found no clear fragmentation
+benefit before reverting: the bundle is a flat, precompiled table matched against the SERVER's own
+presented chain, and it is the server's chain being parsed that drives the allocation churn, not
+the size of our own trust store — so there was no fragmentation upside being traded away either.
+
+**Where this actually leaves §1.3: better understood, not closed.** The crash is real fragmentation
+of a genuinely tiny (32 KB), unavoidably-shared pool, driven by hardware crypto's necessary
+temporary copies of PSRAM-resident TLS data — a direct, structural consequence of the original
+§1.3 fix (move mbedTLS to PSRAM) rather than a separate bug. Every session's mitigations (moving
+plugins' own big buffers to PSRAM, right-sizing worker stacks, `MBEDTLS_DYNAMIC_BUFFER`) reduce the
+PERMANENT baseline this pool has to share with those temporary copies, which is real and worth
+keeping, but none of them touch the actual fragmentation mechanism. A genuine fix needs one of:
+
+* A dedicated, non-fragmenting (e.g. fixed-size-block, or pool-per-size-class) allocator scoped
+  specifically to this 32 KB arena, so hardware-crypto's own churn cannot fragment it the way a
+  general-purpose heap does — the most correct fix, and the most work.
+* Accepting the residual risk as-is, with the mitigations already in place, and treating a rare
+  reboot as a known, understood cost rather than a mystery to keep chasing.
+* Revisiting whether hardware crypto acceleration is worth it for THIS application's actual
+  traffic pattern (occasional, low-throughput API calls, not bulk transfer) despite tonight's
+  result — the measurement above was one 90-second window, not a rigorous trial, and a longer,
+  more careful A/B comparison might tell a different story than tonight's quick check.
+
+**All of tonight's diagnostic instrumentation has been removed from the tree** — the heap trace
+buffer and its `ensureHeapTraceReady()`/`heap_trace_start`/`heap_trace_dump_caps` calls in
+`attemptGet()`, and the before/after `heap_caps_get_free_size` logging in both `attemptGet()` and
+`HttpsClient::get()`. None of it is needed for normal operation, and RISC-V's `range 0 0` on
+`CONFIG_HEAP_TRACING_STACK_DEPTH` means it could never have named a call site directly on this
+chip anyway — reproduce it from this write-up rather than assuming it is still there.
 
 ### A wanted feature, captured before it is forgotten
 
