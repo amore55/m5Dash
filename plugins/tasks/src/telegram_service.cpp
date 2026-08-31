@@ -110,7 +110,7 @@ esp_err_t TelegramService::start(dashboard::storage::TaskStore& tasks) {
         len == sizeof(stored)) {
         next_update_id_ = stored;
     }
-    // 16 KB. 8 KB — this project's usual convention for "a TLS handshake plus a parse" — was
+    // 12 KB. 8 KB — this project's usual convention for "a TLS handshake plus a parse" — was
     // tried first and OVERFLOWED on a real device processing a real message: a genuine FreeRTOS
     // stack-protection panic in the "telegram" task, not the separate internal-SRAM class of
     // crash this feature also hit earlier. Every test up to that point had failed before ever
@@ -118,9 +118,14 @@ esp_err_t TelegramService::start(dashboard::storage::TaskStore& tasks) {
     // 8 KB had never actually been exercised against the real path — mbedTLS's own call depth
     // during the handshake, on top of pollOnce()'s token/url/text/reply locals (~2.7 KB) and
     // attemptGet()'s own auth[512] in https_client.cpp, added up to more than weather's plain
-    // 8 KB budget covers for a smaller set of locals. See the high-water-mark log below rather
-    // than re-deriving this by hand again.
-    const esp_err_t err = worker_.start("telegram", 16384);
+    // 8 KB budget covers for a smaller set of locals.
+    //
+    // Bumped to 16 KB at the time, then measured with the high-water-mark log below: a real
+    // message left 7472 B untouched, i.e. ~8.9 KB actually used. 16 KB was pure waste of this
+    // board's scarcest resource — internal SRAM is a permanent, project-wide tax paid by every
+    // worker stack whether busy or not (§1.3) — so this is now 12 KB: a real ~3 KB margin above
+    // the measured figure, not another guess.
+    const esp_err_t err = worker_.start("telegram", 12288);
     if (err != ESP_OK) {
         return err;
     }

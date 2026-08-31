@@ -315,18 +315,33 @@ trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
 
 ### Pick up here
 
-**Most urgent, from 30 August — finish verifying OTA, and keep watching §1.3:**
+**Most urgent, from 31 August — the redirect fix is now PROVEN, but GitHub itself started
+saying no. Give it a rest, then finish verifying the install:**
 
-1. **Retry "Check for updates" against the published `v0.1.0` release, then actually press
-   Install and watch it through a reboot.** The redirect fix is confirmed working (a fresh TLS
-   handshake to `release-assets.githubusercontent.com` was observed, and the declared
-   `content_length` for that fetch was small and plausible) but the session's final §1.3 crash
-   landed before `UpdateAvailable` / the install / the post-reboot `confirmBootIfPending()` cycle
-   could be confirmed. See that session's entry for the full context.
-2. **§1.3 is not closed.** It recurred once more, unprompted, during an ordinary boot-time fetch
-   burst, after every fix tried across 29 and 30 August. Re-measure the internal low-water mark
-   (the existing `health:` log line) across several cold boots before trusting any change here —
-   a single clean boot is not evidence the margin is safe.
+1. **The `v0.1.0` release asset URL has been hit dozens of times in a few hours** (both from a
+   dev machine and the device, across two sessions of repeated "Check for updates" testing) and
+   started intermittently answering `HTTP 404` for `manifest.json` directly from `github.com` —
+   not a redirect gone wrong, a flat 404, alternating with genuine successful 302→200 fetches
+   with no code change in between. A browser/curl hitting the same URL moments later still got a
+   clean 200. This has every hallmark of GitHub's own rate-limiting or abuse heuristic on that
+   specific asset path reacting to unusually repetitive traffic, not a bug here — **do not chase
+   it further in code.** Wait a while (hours, not minutes) before the next attempt, or publish a
+   fresh tag/release to sidestep whatever counter GitHub is tracking against this one.
+2. **Once that clears: retry "Check for updates", then actually press Install and watch it
+   through a reboot.** The redirect-following fix itself is now proven working, confirmed
+   multiple times this session — a real 302 to `release-assets.githubusercontent.com`, a fresh
+   TLS handshake to the new host, and a correctly small declared `content_length` for the real
+   manifest. What has NOT yet been observed end to end is `UpdateAvailable` appearing on the
+   settings page, the Install button, the download progress, or the post-reboot
+   `confirmBootIfPending()` confirmation — every attempt so far has been blocked by either the
+   404 above or a §1.3 crash landing first.
+3. **§1.3 is measurably better but still not closed.** Telegram's worker stack was cut from
+   16 KB to 12 KB this session (16 KB was reasoned about, never measured; the high-water-mark log
+   from 30 August showed only ~8.9 KB actually used) and the internal low-water mark on a clean
+   boot afterwards reached ~41 KB — the best figure measured all session, versus repeated crashes
+   in the low-to-mid 30s KB range beforehand on the SAME build before that one change. That is
+   good evidence this genuinely helped, not proof the margin is now safe. Re-measure across
+   several cold boots before trusting it further, and see §1.3 itself for the running account.
 
 **Then, three smaller things left over from the 24 August session:**
 
@@ -582,6 +597,47 @@ later and the actual `UpdateAvailable` / install / reboot / `confirmBootIfPendin
 never confirmed. **Next session: retry "Check for updates" fresh, confirm it reports `0.1.0
 available`, then actually press Install and watch it through a reboot.** The release only proves
 the redirect fix; it does not yet prove the install path.
+
+### Session of 31 August 2026 — the redirect fix is confirmed, GitHub started saying no, §1.3 improved
+
+**Continuing straight from 30 August's "next session" item.** The device had done a full power
+cycle overnight (RTC lost its time — a normal cold start, not a crash) and came back up clean.
+Repeated "Check for updates" attempts against the same `v0.1.0` release surfaced two separate,
+unrelated problems, neither of them the redirect-following fix itself:
+
+**§1.3 recurred several more times, more often than the previous session's ending suggested.**
+Re-enabled the hop diagnostic at warning level (it was left at `ESP_LOGD` — correctly quiet for
+normal use, but that meant it was invisible while actively debugging tonight) and traced the
+crash to nothing OTA-specific: it hit during ordinary weather/Elizabeth/GitHub fetches too,
+consistent with 30 August's own conclusion that this is a general, still-open margin problem, not
+something the redirect work introduced. **Genuine improvement found and applied:** Telegram's
+worker stack — bumped to 16 KB on 30 August by reasoning, never by measurement — was actually
+using only ~8.9 KB per that session's own high-water-mark log. Cut to 12 KB (a real ~3 KB margin
+above the measured figure, not another guess), which reclaimed 4 KB of this board's permanently
+scarce internal SRAM. Boots after that change measured consistently better (~41–52 KB low-water,
+versus repeated crashes in the low-to-mid 30s KB range on the identical build immediately before
+it) — real evidence this specific change helped, though not proof the margin is now safe outright.
+The lesson from 29 August ("size it from what the code really keeps on the stack... a generous
+guess is a live regression waiting to be found") held again, on the same feature, one more time.
+
+**Separately: `manifest.json` started coming back `HTTP 404` directly from `github.com`, no
+redirect involved.** Confirmed with the hop diagnostic — `hop 0: HTTP 404, declared
+content_length=0` — and confirmed it is NOT the redirect-following code: a browser/PowerShell
+request to the exact same URL from a dev machine, made within seconds of the device's failed
+attempt, returned a clean `200` with the correct 308-byte body every single time it was tried.
+The 404 only ever happened to the device's requests, and only intermittently, alternating
+attempt to attempt with genuine successful redirect-then-200 fetches with no code change between
+them. By this point the same asset URL had been requested dozens of times across two sessions of
+back-to-back testing. The working theory — GitHub applying some rate-limit or abuse heuristic to
+that specific, heavily-hammered asset path — fits every observed fact and is not something to
+debug further in this codebase. **Do not mistake this 404 for the redirect fix being broken
+again** — the redirect mechanism itself was independently confirmed working multiple times this
+same session (a real 302, a fresh TLS handshake to the new host, a correctly small declared
+`content_length`).
+
+**Net effect: the redirect-following fix is now considered proven, not just plausible.** What
+remains unverified is only the install/reboot half of OTA, blocked tonight by the two problems
+above rather than by anything wrong with 30 August's fix. See "Pick up here" for what to do next.
 
 ### A wanted feature, captured before it is forgotten
 
