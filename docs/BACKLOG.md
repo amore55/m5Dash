@@ -315,34 +315,25 @@ trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
 
 ### Pick up here
 
-**Most urgent, from 31 August — the redirect fix is now PROVEN, but GitHub itself started
-saying no. Give it a rest, then finish verifying the install:**
+**Most urgent, from 12 September:**
 
-1. **The `v0.1.0` release asset URL has been hit dozens of times in a few hours** (both from a
-   dev machine and the device, across two sessions of repeated "Check for updates" testing) and
-   started intermittently answering `HTTP 404` for `manifest.json` directly from `github.com` —
-   not a redirect gone wrong, a flat 404, alternating with genuine successful 302→200 fetches
-   with no code change in between. A browser/curl hitting the same URL moments later still got a
-   clean 200. This has every hallmark of GitHub's own rate-limiting or abuse heuristic on that
-   specific asset path reacting to unusually repetitive traffic, not a bug here — **do not chase
-   it further in code.** Wait a while (hours, not minutes) before the next attempt, or publish a
-   fresh tag/release to sidestep whatever counter GitHub is tracking against this one.
-2. **Once that clears: retry "Check for updates", then actually press Install and watch it
-   through a reboot.** The redirect-following fix itself is now proven working, confirmed
-   multiple times this session — a real 302 to `release-assets.githubusercontent.com`, a fresh
-   TLS handshake to the new host, and a correctly small declared `content_length` for the real
-   manifest. What has NOT yet been observed end to end is `UpdateAvailable` appearing on the
-   settings page, the Install button, the download progress, or the post-reboot
-   `confirmBootIfPending()` confirmation — every attempt so far has been blocked by either the
-   404 above or a §1.3 crash landing first.
-3. **§1.3 is now precisely diagnosed, still not closed.** Telegram's worker stack was cut from
-   16 KB to 12 KB this session, reclaiming real permanent headroom (measured, not guessed — see
-   §1.3's second entry). Later the same night, heap tracing pinned the crash to fragmentation of
-   the specific 32 KB `SPIRAM_MALLOC_RESERVE_INTERNAL` pool, driven by hardware crypto's temporary
-   internal copies of PSRAM-resident TLS buffers — see §1.3's third entry for the full mechanism
-   and what was tried. **A real fix needs a dedicated, non-fragmenting allocator for that pool,
-   not another config toggle** — worth scoping properly as its own task rather than another
-   late-night experiment. Re-measure across several cold boots before trusting any change here.
+1. **§1.3 is now measurably much better, via `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` doubled to
+   65536** — see §1.3's fourth entry. Zero crashes across four cold boots, a 92-second continuous
+   run, and a live OTA manifest check, with the `health:` log's `dma` figure holding at 14–22 KB
+   against the 1.5–8 KB range that reliably crashed before. Genuinely good evidence, not proof it
+   can never recur — keep watching the `dma` figure, and treat an unexplained reboot as reason to
+   re-open this rather than assume it is unrelated to §1.3.
+2. **OTA install is still not verified end to end, and today's attempt failed for a NEW reason.**
+   The redirect-following fix itself remains proven (confirmed again working on 31 August — a
+   real 302, a fresh TLS handshake to the new host, a correctly small manifest). But "Check for
+   updates" on 12 September reported "could not read the update manifest" — confirmed NOT a §1.3
+   crash (none occurred, `dma` stayed healthy throughout) and NOT the release being gone (`curl`
+   from a dev machine, moments later, resolved `v0.1.0`'s `manifest.json` cleanly: 200, 308
+   bytes). 31 August's theory was GitHub rate-limiting the heavily-retested asset URL; a fresh
+   failure 12 days later, with the asset otherwise reachable, needs its own look rather than being
+   assumed to be the same cause — re-enable the hop/content_length diagnostic in `attemptGet()`
+   (removed from the tree, see §1.3's third entry for exactly what it looked like) if the plain
+   "Check for updates" retry doesn't explain itself quickly.
 
 **Then, three smaller things left over from the 24 August session:**
 
@@ -385,17 +376,16 @@ list above.
 
 ### Known gaps, in rough priority order
 
-1. **Now precisely diagnosed (31 August): it is fragmentation of a specific 32 KB reserved pool,
-   not raw exhaustion — see §1.3's third entry for the full mechanism.** `heap_caps_get_
-   largest_free_block(MALLOC_CAP_DMA)` gets stuck at ~3 KB while ~12 KB is nominally free; a
-   single TLS handshake makes hundreds of small, all-correctly-freed (not leaked) DMA-capable
-   allocations, because hardware SHA/AES has to make a temporary internal copy of every
-   PSRAM-resident buffer it touches — a direct consequence of mbedTLS being routed to PSRAM at
-   all, which was itself the correct fix for an EARLIER, different §1.3 crash. Disabling hardware
-   crypto measurably helped but did not close it and cost real latency; reverted. Still open — a
-   real fix needs a non-fragmenting allocator scoped to that specific pool, which is real, scoped
-   work, not another config toggle. Do not treat a clean boot as proof the margin is safe —
-   re-measure across several cold boots before trusting a change here.
+1. **Diagnosed (31 August), and measurably much better (12 September) — see §1.3's fourth entry.**
+   The crash was fragmentation of the 32 KB `SPIRAM_MALLOC_RESERVE_INTERNAL` pool, not raw
+   exhaustion: `heap_caps_get_largest_free_block(MALLOC_CAP_DMA)` was measured stuck at ~3 KB
+   while ~12 KB was nominally free, because hardware SHA/AES has to make a temporary internal copy
+   of every PSRAM-resident TLS buffer it touches. That pool also holds every plugin's own worker
+   stack (FreeRTOS forces those internal regardless of PSRAM), so it was doing double duty on a
+   fixed 32 KB. Doubling it to 65536 gave zero crashes across four cold boots, a 92-second run,
+   and a live OTA check, with `dma` holding at 14–22 KB instead of 1.5–8 KB. Kept and persisted to
+   `sdkconfig.defaults`. Not proof the margin can never be exceeded again — keep watching the
+   `health:` log's `dma` figure, and re-measure before raising it further.
 2. ~~`Authorization` is not stripped across a redirect.~~ **Closed 30 August**: `esp_http_client`'s
    own redirect-following turned out to never run at all in this codebase (see that session's
    entry — `process_again` is only consulted inside `esp_http_client_perform()`, never called
@@ -730,6 +720,43 @@ buffer and its `ensureHeapTraceReady()`/`heap_trace_start`/`heap_trace_dump_caps
 `HttpsClient::get()`. None of it is needed for normal operation, and RISC-V's `range 0 0` on
 `CONFIG_HEAP_TRACING_STACK_DEPTH` means it could never have named a call site directly on this
 chip anyway — reproduce it from this write-up rather than assuming it is still there.
+
+### §1.3, part 4 (12 September) — the pool itself was just too small, and growing it holds up
+
+**Picked back up with fresh eyes rather than another quick toggle.** Part 3 named the mechanism
+precisely (fragmentation of the 32 KB `SPIRAM_MALLOC_RESERVE_INTERNAL` pool, driven by hardware
+crypto's temporary internal copies) but left the actual fix as future work. Re-read that option's
+own Kconfig help text before touching anything else, and it reframes the whole problem: this pool
+is not a separate arena competing with everything else for space — it is memory *withheld* from
+normal `malloc()`, and FreeRTOS task stacks (forced internal regardless of PSRAM) draw from the
+same pool. That means every plugin's own worker stack has been eating into this exact 32 KB the
+whole time, leaving only a small, heavily-churned residual for hardware crypto's temporary copies
+to fragment — which is a completely different picture from "a fixed 32 KB arena isn't enough for
+TLS", and points straight at "the arena itself is undersized for what it has to hold."
+
+**`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` doubled, from ESP-IDF's own default of 32768 to 65536.**
+Nothing else changed. Measured across four separate cold boots, one continuous 92-second run, and
+a live "Check for updates" (contacting `github.com` fresh — historically one of the most reliable
+crash triggers, since it is a host nothing else on the device ever warms): **zero crashes**, and
+`dma` in the existing `health:` log line held at **14–22 KB** throughout every one of them, against
+the 1.5–8 KB range that reliably crashed on the SAME build before this change. This is the
+"dedicated, non-fragmenting allocator" item part 3 scoped as a bigger task — turns out the simpler
+lever (give the existing protected pool more room) was worth trying and measuring properly first,
+and it earned its keep. Persisted to `sdkconfig.defaults`.
+
+**Still worth knowing, not yet done:**
+
+* This is a measured improvement over many representative test conditions, not a mathematical
+  proof the crash can never recur — keep the `health:` `dma` figure in mind if a reboot ever shows
+  up unexplained, and re-open this section rather than assuming it is unrelated.
+* Not tried: raising it further. 65536 was a first doubling, chosen to test the hypothesis
+  cheaply; if headroom is ever needed again, re-measure at 96 KB or so before assuming it helps
+  further — the same "measure, don't guess" rule this section has always followed.
+* The OTA manifest check itself still failed with "could not read the update manifest" during this
+  same testing — confirmed NOT a memory problem (no crash, healthy `dma` throughout) and NOT the
+  release being gone (`curl` confirmed `v0.1.0`'s `manifest.json` still resolves correctly,
+  200, 308 bytes, moments later from a dev machine). That is `docs/BACKLOG.md`'s own "Pick up
+  here" item 1 territory (OTA install verification), not §1.3 — do not conflate the two.
 
 ### A wanted feature, captured before it is forgotten
 
