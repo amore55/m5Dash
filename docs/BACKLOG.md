@@ -323,17 +323,15 @@ trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
    against the 1.5–8 KB range that reliably crashed before. Genuinely good evidence, not proof it
    can never recur — keep watching the `dma` figure, and treat an unexplained reboot as reason to
    re-open this rather than assume it is unrelated to §1.3.
-2. **OTA install is still not verified end to end, and today's attempt failed for a NEW reason.**
-   The redirect-following fix itself remains proven (confirmed again working on 31 August — a
-   real 302, a fresh TLS handshake to the new host, a correctly small manifest). But "Check for
-   updates" on 12 September reported "could not read the update manifest" — confirmed NOT a §1.3
-   crash (none occurred, `dma` stayed healthy throughout) and NOT the release being gone (`curl`
-   from a dev machine, moments later, resolved `v0.1.0`'s `manifest.json` cleanly: 200, 308
-   bytes). 31 August's theory was GitHub rate-limiting the heavily-retested asset URL; a fresh
-   failure 12 days later, with the asset otherwise reachable, needs its own look rather than being
-   assumed to be the same cause — re-enable the hop/content_length diagnostic in `attemptGet()`
-   (removed from the tree, see §1.3's third entry for exactly what it looked like) if the plain
-   "Check for updates" retry doesn't explain itself quickly.
+2. **OTA's manifest check is now genuinely fixed and confirmed on device** — see "Session of 12
+   September 2026, part 2" below for the full account. Two real bugs, both in this project's own
+   code: a `MediumString`/`UrlString` truncation of the manifest URL, and
+   `esp_http_client_get_header()` being structurally incapable of reading a response's Location
+   header (the redirect-following code needed rewriting to use
+   `esp_http_client_set_redirection()` instead). **What remains is install itself** — download,
+   SHA-256 verify, flash, reboot, `confirmBootIfPending()` — never yet exercised end to end on
+   this project. Needs a genuinely newer release (e.g. `v0.1.2`) to test against, since `v0.1.1`
+   is both the running version and the one the current manifest points to.
 
 **Then, three smaller things left over from the 24 August session:**
 
@@ -757,6 +755,80 @@ and it earned its keep. Persisted to `sdkconfig.defaults`.
   release being gone (`curl` confirmed `v0.1.0`'s `manifest.json` still resolves correctly,
   200, 308 bytes, moments later from a dev machine). That is `docs/BACKLOG.md`'s own "Pick up
   here" item 1 territory (OTA install verification), not §1.3 — do not conflate the two.
+
+### Session of 12 September 2026, part 2 — OTA's "could not read the update manifest" was two separate bugs, and the redirect fix itself needed fixing
+
+**Not the TLS-fingerprinting theory §1.3 part 4 left as the leading suspect.** That theory was
+formed mid-session from real evidence — an identical `curl` request from a dev machine succeeding
+every time while the device's own request came back a flat HTTP 404 whose body was confirmed
+(via a temporary hex-dump of the first bytes) to be genuine GitHub HTML — and it justified building
+a whole detour through `api.github.com`'s REST API (resolve the release, find the named asset,
+fetch its signed `api.github.com/.../releases/assets/{id}` URL with `Accept:
+application/octet-stream`) to sidestep whichever bot-mitigation the browser-facing
+`github.com/.../releases/download/...` alias was assumed to apply. **It was never that.** Both
+real causes were in this project's own code, and neither had anything to do with which GitHub
+host was used.
+
+**Bug one: `Settings::ota_manifest_url` (a 256-char `UrlString`) was copied into a 64-char
+`MediumString`** in `OtaService::requestCheck()`/`requestInstall()` and again in
+`doCheck()`/`doInstall()`'s own signatures — silently truncating any real manifest URL under a
+GitHub release, which routinely runs past 64 characters. The saved URL
+(`.../v0.1.1/manifest.json`, 73 characters) came out the other end as
+`.../v0.1.1/mani` — hence GitHub's own, entirely correct, "no asset named 'mani'" once the API
+detour's asset-lookup was in place to say so. The owner's own insistence that the settings-page
+field genuinely held the full URL and had definitely been saved (rather than a typo or a forgotten
+click) was the signal that pointed at the code rather than the data. **Fixed** by changing every
+one of those four signatures/locals from `MediumString` to `UrlString` — see
+`ota_service.hpp`/`.cpp`.
+
+**Bug two, found only once bug one stopped masking it: `esp_http_client_get_header(client,
+"Location", &value)` can never return a redirect's destination, regardless of buffer size, host,
+or anything else.** Read straight from ESP-IDF's own `esp_http_client.c`: that function is
+`return http_header_get(client->request->headers, key, value)` — it looks up headers **we** set
+on the outgoing **request**, never anything the server sent back. The Location value the parser
+receives is instead accumulated into a private `client->location` field
+(`http_on_header_value()`'s special case for that header name), which only
+`esp_http_client_set_redirection()` reads. Every redirect this project has ever tried to follow by
+hand (`attemptGet()`/`attemptStreamGet()` in `https_client.cpp`, since 30 August) was therefore
+always going to fail with "redirect with no Location header" the moment a real 3xx arrived — 31
+August's and this session's earlier "it works" confirmations were against a nearly-empty
+manifest.json server response that happened not to redirect at that exact moment, not a genuine
+end-to-end proof. Two blind alleys were chased before finding this: raising `buffer_size` (the RX
+counterpart to the already-set `buffer_size_tx`) to 2048 on the theory that a long, signed
+Location header did not fit — harmless, possibly still worth keeping for headers generally, but
+did not fix this; and the entire `api.github.com` detour above, disproven by temporarily bypassing
+it (`if (false && parseGithubReleaseDownloadUrl(...))`) and finding the *direct*
+`github.com/.../download/...` URL failed with the identical "no Location header" symptom,
+independent of which host issued the redirect.
+
+**The real fix: rewrite `attemptGet()`/`attemptStreamGet()` to create ONE `esp_http_client` handle
+before the loop (not a fresh one per hop), set headers on it once, and on a 3xx call
+`esp_http_client_set_redirection(client)`** — ESP-IDF's own intended mechanism, which reads the
+correctly-populated private field and, critically, calls `esp_http_client_set_url()` internally,
+which itself closes the existing connection first if the redirect crosses hosts. The loop then just
+`continue`s back to `esp_http_client_open()` on the same handle, which opens a fresh TLS session
+(correct SNI) exactly when one is actually needed. This removed the whole hand-rolled
+`location`/`location_buf` (`ResponseBuffer`) / `kMaxRedirectUrlLen` machinery, and with it the
+now-pointless `api.github.com` detour in `ota_service.cpp` (`nextUrlSegment`,
+`parseGithubReleaseDownloadUrl`, `resolveGithubReleaseAssetApiUrl`) was reverted back to a plain
+direct fetch of `manifest_url` / `manifest.url` — the API-shaped complexity was solving a problem
+that did not exist once the actual bug was found. `HttpRequest::header_is_credential`, added only
+to support that detour's non-secret `Accept` header surviving a redirect, was removed again with
+it — it had no other caller and was never committed.
+
+**Confirmed on device, 12 September, against the real `v0.1.1` GitHub release**: "Check for
+updates" produced `ota: check: already on 0.1.1` — the manifest fetch succeeded end to end
+(TLS handshake, the `github.com` → `release-assets.githubusercontent.com` redirect actually
+followed this time, correct parse, correct version comparison) with no truncation and no
+"redirect with no Location header." This proves the **check** path; a genuinely newer release
+(`v0.1.2`) is the next step to prove **install** (download → verify → flash → reboot →
+`confirmBootIfPending()`) for the first time ever on this project.
+
+**Lesson worth keeping:** a plausible, evidence-backed theory (TLS fingerprinting) can still be
+wrong, and the tell was that the *symptom* (no Location, or a 404) survived a change that should
+have fixed it if the theory were true (switching hosts, in this case). When a fix doesn't fix it,
+suspect the mechanism, not just the target — reading the actual library source settled in minutes
+what two rounds of external-cause theorising had not.
 
 ### A wanted feature, captured before it is forgotten
 

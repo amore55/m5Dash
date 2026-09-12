@@ -10,7 +10,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
-#include "dashboard/net/response_buffer.hpp"
 #include "version.hpp"
 
 namespace dashboard::net {
@@ -51,11 +50,6 @@ constexpr size_t kLogUrlBytes = 160;
 /// them BY HAND rather than trusting esp_http_client's own redirect_counter.
 constexpr int kMaxRedirects = 5;
 
-/// A signed GitHub release-asset redirect Location measured well over 1 KB in practice (an
-/// embedded JWT plus an Azure Blob Storage SAS query string) — generous headroom above that, not
-/// a guess at "how long can a URL be" in the abstract.
-constexpr size_t kMaxRedirectUrlLen = 2048;
-
 /// Identifies the firmware to upstreams, which is the polite thing to do and makes our traffic
 /// recognisable in someone else's rate-limit logs.
 const char* userAgent() {
@@ -94,22 +88,27 @@ uint32_t backoffMs(int attempt) {
 
 /// One attempt. Everything that can go wrong is reported; nothing is retried at this level.
 ///
-/// REDIRECTS ARE FOLLOWED BY HAND, in the loop below — not by esp_http_client's own
-/// disable_auto_redirect/max_redirection_count, which do nothing here. Those are only consulted
-/// inside esp_http_client_perform()'s own loop (see esp_http_client.c: `process_again` is
-/// commented "used only in the blocking mode"), and this function has never called perform() —
-/// it uses the manual open()/fetch_headers()/read() sequence throughout, for a caller-supplied
-/// destination buffer and (in streamGet's sibling function) true streaming. That means every
-/// redirect this project has ever been sent has silently gone unfollowed, invisible until
-/// GitHub's release-asset hosting was tested: it unconditionally redirects
-/// github.com -> release-assets.githubusercontent.com for every download, and what this code
-/// read back as "the manifest" was actually github.com's own redirect landing page.
+/// REDIRECTS ARE FOLLOWED BY HAND, in the loop below, via esp_http_client_set_redirection() on
+/// the SAME client handle — not by esp_http_client's disable_auto_redirect/max_redirection_count,
+/// which do nothing here (they are only consulted inside esp_http_client_perform()'s own loop,
+/// never called by this function, which needs a caller-supplied destination buffer and, in
+/// streamGet()'s sibling function, true streaming).
 ///
-/// A CREDENTIALLED REQUEST DOES NOT FOLLOW REDIRECTS, exactly as before — esp_http_client would
-/// have resent our Authorization header to wherever Location pointed, and a compromised or
-/// merely misconfigured upstream answering "302 -> https://attacker/" would have handed over a
-/// live token with no TLS break required. That decision is enforced here now instead, at the
-/// first sign of a 3xx.
+/// The first version of this fix (30–31 August, then again 12 September) tried to read the
+/// Location header itself via esp_http_client_get_header(client, "Location", ...) after a fresh
+/// esp_http_client_init() per hop. That can never work: esp_http_client_get_header() returns
+/// headers WE set on the REQUEST, not ones the server sent back — it was structurally the wrong
+/// function, unrelated to buffer sizes, TLS fingerprinting, or which host issued the redirect,
+/// all of which were chased first. set_redirection() is the API's own, correct mechanism: it
+/// reads the client's private, internally-accumulated `location` field (built by the header
+/// parser across as many reads as the value needs, regardless of buffer_size) and updates the
+/// client's URL — closing the old connection first if the host changed, so the next open() below
+/// naturally starts a fresh TLS session with the right SNI. No manual URL buffer needed at all.
+///
+/// A CREDENTIALLED REQUEST DOES NOT FOLLOW REDIRECTS. esp_http_client would resend our
+/// Authorization header to wherever Location pointed, and a compromised or merely misconfigured
+/// upstream answering "302 -> https://attacker/" would hand over a live token with no TLS break
+/// required. Enforced here at the first sign of a 3xx, before set_redirection() is ever called.
 esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out, size_t capacity,
                      HttpResponse& response) {
     // esp_http_client's OWN "Error parse url" diagnostic logs the request URL VERBATIM when it
@@ -126,78 +125,65 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
         (request.header_value != nullptr && request.header_value[0] != '\0');
     const bool is_post = (request.post_body != nullptr);
 
-    // Holds a redirect Location across hops, from PSRAM rather than this worker's own stack — a
-    // rare 2 KB add-on to every plugin's stack budget for something a fetch mostly never uses is
-    // exactly the kind of cost docs/BACKLOG.md §1.3 says to measure rather than assume away.
-    // Declared once, outside the loop, so `url` can point into it after a hop reassigns it —
-    // reused rather than growing per hop, since only ever one hop's value is live at a time.
-    dashboard::net::ResponseBuffer location_buf(kMaxRedirectUrlLen - 1);
-    if (!location_buf.valid()) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = request.url;
+    cfg.timeout_ms = request.timeout_ms;
+    cfg.user_agent = userAgent();
+    // The bundled root store. There is no code path that disables this.
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    // Both left at their do-nothing defaults deliberately — see this function's own header
+    // comment on why. Redirects are this loop's job, via set_redirection() on this same handle.
+    cfg.disable_auto_redirect = true;
+    cfg.max_redirection_count = 0;
+    cfg.method = is_post ? HTTP_METHOD_POST : HTTP_METHOD_GET;
+
+    // Room for the request line and headers we SEND. esp_http_client defaults to 512 bytes,
+    // which is not enough for the kind of URL these APIs use: Open-Meteo's forecast query
+    // names every variable it should return and comes to about 500 characters on its own, so
+    // the request line alone filled the buffer and the client logged
+    //     E HTTP_HEADER: Buffer length is small to fit all the headers
+    // on every single fetch. TfL and Anthropic take query parameters too, so this is raised
+    // here, once, rather than left for each plugin to trip over.
+    cfg.buffer_size_tx = 1024;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
         return ESP_ERR_NO_MEM;
     }
-    char* location = location_buf.data();
-    const char* url = request.url;
+
+    // Header VALUES are set here, ONCE, and never logged. They persist on this handle across
+    // every hop below — esp_http_client_set_header() attaches to the client, not to one specific
+    // open()/close() cycle — so there is no need to re-set them after a redirect.
+    char auth[512];
+    if (request.bearer != nullptr && request.bearer[0] != '\0') {
+        std::snprintf(auth, sizeof(auth), "Bearer %s", request.bearer);
+        esp_http_client_set_header(client, "Authorization", auth);
+    }
+    if (request.header_name != nullptr && request.header_value != nullptr) {
+        esp_http_client_set_header(client, request.header_name, request.header_value);
+    }
+    std::memset(auth, 0, sizeof(auth));
+    // MUST be set before esp_http_client_open() below, not after: in this manual (open/write/
+    // read) mode, open() is the call that actually sends the request line and every header set
+    // so far — a header set afterwards affects nothing, because there is nothing left to attach
+    // it to. Found via a Telegram sendMessage POST coming back "HTTP 400": Telegram was receiving
+    // the form body with no Content-Type at all and rejecting it as malformed.
+    if (is_post) {
+        esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
+    }
+
+    // Opened with the body length up front: esp_http_client's manual (open/write/read) mode
+    // needs to know how much it will be asked to write, the same way it needs to know nothing
+    // extra for a bodyless GET.
+    const int post_len = is_post ? static_cast<int>(std::strlen(request.post_body)) : 0;
 
     for (int hop = 0;; ++hop) {
-        esp_http_client_config_t cfg = {};
-        cfg.url = url;
-        cfg.timeout_ms = request.timeout_ms;
-        cfg.user_agent = userAgent();
-        // The bundled root store. There is no code path that disables this.
-        cfg.crt_bundle_attach = esp_crt_bundle_attach;
-        // Both left at their do-nothing defaults deliberately — see this function's own header
-        // comment on why. Redirects are this loop's job, not esp_http_client's.
-        cfg.disable_auto_redirect = true;
-        cfg.max_redirection_count = 0;
-        cfg.method = is_post ? HTTP_METHOD_POST : HTTP_METHOD_GET;
-
-        // Room for the request line and headers. esp_http_client defaults to 512 bytes, which is
-        // not enough for the kind of URL these APIs use: Open-Meteo's forecast query names every
-        // variable it should return and comes to about 500 characters on its own, so the request
-        // line alone filled the buffer and the client logged
-        //     E HTTP_HEADER: Buffer length is small to fit all the headers
-        // on every single fetch. TfL and Anthropic take query parameters too, so this is raised
-        // here, once, rather than left for each plugin to trip over.
-        cfg.buffer_size_tx = 1024;
-
-        esp_http_client_handle_t client = esp_http_client_init(&cfg);
-        if (client == nullptr) {
-            return ESP_ERR_NO_MEM;
-        }
-
-        // Header VALUES are set here and never logged, here or anywhere downstream.
-        char auth[512];
-        if (request.bearer != nullptr && request.bearer[0] != '\0') {
-            std::snprintf(auth, sizeof(auth), "Bearer %s", request.bearer);
-            esp_http_client_set_header(client, "Authorization", auth);
-        }
-        if (request.header_name != nullptr && request.header_value != nullptr) {
-            esp_http_client_set_header(client, request.header_name, request.header_value);
-        }
-        // MUST be set before esp_http_client_open() below, not after: in this manual (open/
-        // write/read) mode, open() is the call that actually sends the request line and every
-        // header set so far — a header set afterwards affects nothing, because there is nothing
-        // left to attach it to. Found via a Telegram sendMessage POST coming back "HTTP 400":
-        // Telegram was receiving the form body with no Content-Type at all and rejecting it as
-        // malformed.
-        if (is_post) {
-            esp_http_client_set_header(client, "Content-Type",
-                                       "application/x-www-form-urlencoded");
-        }
-
-        // Opened with the body length up front: esp_http_client's manual (open/write/read) mode
-        // needs to know how much it will be asked to write, the same way it needs to know
-        // nothing extra for a bodyless GET.
-        const int post_len = is_post ? static_cast<int>(std::strlen(request.post_body)) : 0;
         esp_err_t err = esp_http_client_open(client, post_len);
         if (err != ESP_OK) {
             ESP_LOGW(kTag, "%s: connection failed: %s", safe_url, esp_err_to_name(err));
-            // Wipe the Authorization header we built before the stack frame goes away.
-            std::memset(auth, 0, sizeof(auth));
             esp_http_client_cleanup(client);
             return err;
         }
-        std::memset(auth, 0, sizeof(auth));
 
         if (is_post) {
             const int written = esp_http_client_write(client, request.post_body, post_len);
@@ -217,11 +203,6 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
                 static_cast<long long>(content_length));
 
         if (response.status >= 300 && response.status < 400) {
-            // The Location value is NOT logged: it is attacker-controlled in exactly the
-            // credentialled-redirect scenario this guards against, and even for an
-            // unauthenticated request it can carry a signed, session-scoped token (as GitHub's
-            // release-asset redirects do) that is no more this log's business than any other
-            // credential.
             if (carries_credential) {
                 ESP_LOGW(kTag, "%s: refused to follow a %d redirect on a credentialled request",
                          safe_url, response.status);
@@ -235,20 +216,18 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
                 esp_http_client_cleanup(client);
                 return ESP_ERR_INVALID_RESPONSE;
             }
-            char* location_value = nullptr;
-            if (esp_http_client_get_header(client, "Location", &location_value) != ESP_OK ||
-                location_value == nullptr || location_value[0] == '\0') {
-                ESP_LOGW(kTag, "%s: redirect with no Location header", safe_url);
+            // Closes the current connection itself if the redirect crosses hosts — see this
+            // function's own header comment. A failure here means the response had no usable
+            // Location at all (the Location value is not logged: attacker-controlled for a
+            // credentialled request, and a signed, session-scoped token for an unauthenticated
+            // one either way, no more this log's business than any other credential).
+            const esp_err_t redirect_err = esp_http_client_set_redirection(client);
+            if (redirect_err != ESP_OK) {
+                ESP_LOGW(kTag, "%s: redirect with no usable Location", safe_url);
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 return ESP_ERR_INVALID_RESPONSE;
             }
-            std::snprintf(location, location_buf.capacity(), "%s", location_value);
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
-            url = location;  // next hop opens THIS client fresh — a new host needs a new TLS
-                             // session (a new SNI) regardless, so reusing the old one is not an
-                             // option to begin with
             continue;
         }
 
@@ -327,62 +306,53 @@ esp_err_t attemptGet(const HttpRequest& request, const char* safe_url, char* out
 /// has no reason to know that dash::cfg::kOtaChunkBytes happens to be the same number.
 constexpr size_t kStreamChunkBytes = 4096;
 
-/// Shares attemptGet()'s connection setup — credential/redirect policy, headers — but the read
-/// loop is fundamentally different (no destination buffer or size ceiling to fill, a sink call
-/// per chunk instead), so it is its own function rather than a shared one branching on a
-/// "streaming or not" flag partway through.
+/// Shares attemptGet()'s connection setup — credential/redirect policy, headers, one handle
+/// reused across hops via esp_http_client_set_redirection() — but the read loop is fundamentally
+/// different (no destination buffer or size ceiling to fill, a sink call per chunk instead), so
+/// it is its own function rather than a shared one branching on a "streaming or not" flag
+/// partway through.
 ///
-/// Redirects are followed BY HAND here too — see attemptGet()'s own header comment for why: this
-/// is exactly the function that first proved it matters, since GitHub always redirects a release
-/// asset download (github.com -> release-assets.githubusercontent.com), and OTA's own binary
-/// download goes through this function, not attemptGet().
+/// Following redirects matters here in particular: GitHub always redirects a release asset
+/// download (github.com -> release-assets.githubusercontent.com), and OTA's own binary download
+/// goes through this function, not attemptGet().
 esp_err_t attemptStreamGet(const HttpRequest& request, const char* safe_url,
                           const HttpsClient::StreamSink& sink, HttpResponse& response) {
     const bool carries_credential =
         (request.bearer != nullptr && request.bearer[0] != '\0') ||
         (request.header_value != nullptr && request.header_value[0] != '\0');
 
-    // From PSRAM, not this worker's own stack — see attemptGet()'s identical comment.
-    dashboard::net::ResponseBuffer location_buf(kMaxRedirectUrlLen - 1);
-    if (!location_buf.valid()) {
+    esp_http_client_config_t cfg = {};
+    cfg.url = request.url;
+    cfg.timeout_ms = request.timeout_ms;
+    cfg.user_agent = userAgent();
+    cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    cfg.disable_auto_redirect = true;  // this loop's job, via set_redirection() — see attemptGet()
+    cfg.max_redirection_count = 0;
+    cfg.method = HTTP_METHOD_GET;  // no POST caller; add one if that ever changes
+    cfg.buffer_size_tx = 1024;
+
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (client == nullptr) {
         return ESP_ERR_NO_MEM;
     }
-    char* location = location_buf.data();
-    const char* url = request.url;
+
+    char auth[512];
+    if (request.bearer != nullptr && request.bearer[0] != '\0') {
+        std::snprintf(auth, sizeof(auth), "Bearer %s", request.bearer);
+        esp_http_client_set_header(client, "Authorization", auth);
+    }
+    if (request.header_name != nullptr && request.header_value != nullptr) {
+        esp_http_client_set_header(client, request.header_name, request.header_value);
+    }
+    std::memset(auth, 0, sizeof(auth));
 
     for (int hop = 0;; ++hop) {
-        esp_http_client_config_t cfg = {};
-        cfg.url = url;
-        cfg.timeout_ms = request.timeout_ms;
-        cfg.user_agent = userAgent();
-        cfg.crt_bundle_attach = esp_crt_bundle_attach;
-        cfg.disable_auto_redirect = true;  // this loop's job, not esp_http_client's — see above
-        cfg.max_redirection_count = 0;
-        cfg.method = HTTP_METHOD_GET;  // no POST caller; add one if that ever changes
-        cfg.buffer_size_tx = 1024;
-
-        esp_http_client_handle_t client = esp_http_client_init(&cfg);
-        if (client == nullptr) {
-            return ESP_ERR_NO_MEM;
-        }
-
-        char auth[512];
-        if (request.bearer != nullptr && request.bearer[0] != '\0') {
-            std::snprintf(auth, sizeof(auth), "Bearer %s", request.bearer);
-            esp_http_client_set_header(client, "Authorization", auth);
-        }
-        if (request.header_name != nullptr && request.header_value != nullptr) {
-            esp_http_client_set_header(client, request.header_name, request.header_value);
-        }
-
         esp_err_t err = esp_http_client_open(client, 0);
         if (err != ESP_OK) {
             ESP_LOGW(kTag, "%s: connection failed: %s", safe_url, esp_err_to_name(err));
-            std::memset(auth, 0, sizeof(auth));
             esp_http_client_cleanup(client);
             return err;
         }
-        std::memset(auth, 0, sizeof(auth));
 
         esp_http_client_fetch_headers(client);
         response.status = esp_http_client_get_status_code(client);
@@ -403,18 +373,15 @@ esp_err_t attemptStreamGet(const HttpRequest& request, const char* safe_url,
                 esp_http_client_cleanup(client);
                 return ESP_ERR_INVALID_RESPONSE;
             }
-            char* location_value = nullptr;
-            if (esp_http_client_get_header(client, "Location", &location_value) != ESP_OK ||
-                location_value == nullptr || location_value[0] == '\0') {
-                ESP_LOGW(kTag, "%s: redirect with no Location header", safe_url);
+            // See attemptGet()'s own header comment — this closes/reopens across a host change
+            // itself, and reads the response's actual Location, unlike esp_http_client_get_header().
+            const esp_err_t redirect_err = esp_http_client_set_redirection(client);
+            if (redirect_err != ESP_OK) {
+                ESP_LOGW(kTag, "%s: redirect with no usable Location", safe_url);
                 esp_http_client_close(client);
                 esp_http_client_cleanup(client);
                 return ESP_ERR_INVALID_RESPONSE;
             }
-            std::snprintf(location, location_buf.capacity(), "%s", location_value);
-            esp_http_client_close(client);
-            esp_http_client_cleanup(client);
-            url = location;
             continue;
         }
         if (response.status < 200 || response.status > 299) {

@@ -95,8 +95,13 @@ class OtaService {
     bool busy() const { return worker_.busy() || worker_.pending() > 0; }
 
   private:
-    void doCheck(MediumString manifest_url, ShortString channel);
-    void doInstall(MediumString manifest_url, ShortString channel);
+    // UrlString, not MediumString: this is copied from Settings::ota_manifest_url, itself a
+    // UrlString (256 chars) — a real manifest URL under a GitHub release routinely runs past
+    // MediumString's 64, which silently truncated it here for as long as OTA has existed. Found
+    // 12 September chasing a "no asset named 'mani'" error that turned out to have nothing to do
+    // with GitHub at all: the device had never actually requested "manifest.json".
+    void doCheck(UrlString manifest_url, ShortString channel);
+    void doInstall(UrlString manifest_url, ShortString channel);
 
     /// Fetch and parse the manifest, and separately decide whether it is a genuine upgrade for
     /// THIS device. Split from the caller so both requestCheck() and requestInstall() apply

@@ -142,7 +142,7 @@ void OtaService::requestCheck(const char* manifest_url, const char* channel) {
     if (manifest_url == nullptr) {
         return;
     }
-    MediumString url(manifest_url);
+    UrlString url(manifest_url);
     ShortString ch(channel != nullptr ? channel : "");
     worker_.post([this, url, ch]() { doCheck(url, ch); });
 }
@@ -151,12 +151,12 @@ void OtaService::requestInstall(const char* manifest_url, const char* channel) {
     if (manifest_url == nullptr) {
         return;
     }
-    MediumString url(manifest_url);
+    UrlString url(manifest_url);
     ShortString ch(channel != nullptr ? channel : "");
     worker_.post([this, url, ch]() { doInstall(url, ch); });
 }
 
-void OtaService::doCheck(MediumString manifest_url, ShortString channel) {
+void OtaService::doCheck(UrlString manifest_url, ShortString channel) {
     OtaProgress progress;
     progress.state = OtaState::CheckingManifest;
     setProgress(progress);
@@ -188,7 +188,7 @@ void OtaService::doCheck(MediumString manifest_url, ShortString channel) {
     ESP_LOGI(kTag, "check: %s", reason.c_str());
 }
 
-void OtaService::doInstall(MediumString manifest_url, ShortString channel) {
+void OtaService::doInstall(UrlString manifest_url, ShortString channel) {
     OtaProgress progress;
     progress.state = OtaState::CheckingManifest;
     setProgress(progress);
