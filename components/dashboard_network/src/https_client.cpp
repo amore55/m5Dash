@@ -38,6 +38,11 @@ std::mutex& tlsGate() {
     return gate;
 }
 
+std::atomic<bool>& largeTransferInProgress() {
+    static std::atomic<bool> flag{false};
+    return flag;
+}
+
 namespace {
 
 constexpr const char* kTag = "https";

@@ -7,6 +7,7 @@
 #include "esp_log.h"
 
 #include "app_config.hpp"
+#include "dashboard/net/https_client.hpp"
 #include "dashboard/net/response_buffer.hpp"
 #include "dashboard/theme.hpp"
 #include "dashboard/time_utils.hpp"
@@ -477,6 +478,15 @@ esp_err_t GithubPlugin::refreshRepositories(RepoScope scope, bool primary) {
         if (account_changed_.load(std::memory_order_relaxed) ||
             detail_pending_.load(std::memory_order_relaxed)) {
             ESP_LOGI(kTag, "abandoning run lookups: newer request pending");
+            break;
+        }
+        // Same idea, for OTA: found 13 September, crashing on device, that this loop's own
+        // handshakes (this file has no PageManager-visible "refresh" boundary between them —
+        // see net::largeTransferInProgress()'s own comment) landing during an OTA download were
+        // enough to exhaust the shared DMA-capable pool. A remaining repo's run status is worth
+        // far less than not crashing a rare, user-initiated firmware update.
+        if (dashboard::net::largeTransferInProgress().load(std::memory_order_relaxed)) {
+            ESP_LOGI(kTag, "pausing run lookups: an OTA transfer is in progress");
             break;
         }
 

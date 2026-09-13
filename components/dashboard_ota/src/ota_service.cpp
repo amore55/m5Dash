@@ -18,6 +18,20 @@ namespace {
 
 constexpr const char* kTag = "ota";
 
+/// Sets net::largeTransferInProgress() for its own lifetime — see that flag's own header comment
+/// for why doInstall() needs it for its ENTIRE duration, not just the streamGet() download: the
+/// crash it exists to prevent has twice now happened before the download even started, during the
+/// re-fetch-and-reclassify manifest step below.
+class LargeTransferGuard {
+  public:
+    LargeTransferGuard() { net::largeTransferInProgress().store(true, std::memory_order_relaxed); }
+    ~LargeTransferGuard() {
+        net::largeTransferInProgress().store(false, std::memory_order_relaxed);
+    }
+    LargeTransferGuard(const LargeTransferGuard&) = delete;
+    LargeTransferGuard& operator=(const LargeTransferGuard&) = delete;
+};
+
 /// Render a 32-byte SHA-256 digest as 64 lowercase hex characters, matching how
 /// parseManifest() normalises the manifest's own value — so the comparison in doInstall() is a
 /// plain strcmp, not a case-insensitive one.
@@ -199,6 +213,10 @@ void OtaService::doCheck(UrlString manifest_url, ShortString channel) {
 }
 
 void OtaService::doInstall(UrlString manifest_url, ShortString channel) {
+    // Covers this whole function, not just the download below — see LargeTransferGuard's and
+    // net::largeTransferInProgress()'s own comments for why.
+    const LargeTransferGuard large_transfer_guard;
+
     OtaProgress progress;
     progress.state = OtaState::CheckingManifest;
     setProgress(progress);

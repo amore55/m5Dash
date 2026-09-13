@@ -30,6 +30,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -52,6 +53,24 @@ namespace dashboard::net {
 /// internal SRAM during a live flash write is exactly the class of bug that motivated this gate
 /// in the first place.
 std::mutex& tlsGate();
+
+/// True for the whole duration of an OTA download/verify/apply — see OtaService::doInstall().
+///
+/// Found necessary 13 September: pausing PageManager's SCHEDULING of new plugin refreshes while
+/// OTA is busy (PageManager::setRefreshSuppressor()) was not enough on its own, because the
+/// crash it was chasing came from a refresh already running when OTA started — GithubPlugin's own
+/// per-repository loop, seven-plus sequential requests in one already-in-progress fetch() call,
+/// which nothing had told to stop. Each of those requests still only runs one at a time thanks to
+/// tlsGate() above, but "takes its turn eventually" is exactly the problem: one more handshake
+/// landing while OTA's own transfer is live was enough to exhaust the shared DMA-capable pool and
+/// crash the Wi-Fi co-processor's SDIO driver (`sdio_drv.c`, `esp_dma_capable_malloc`). This flag
+/// lets a loop already mid-flight check between its own iterations and back off, the same way
+/// GithubPlugin already checks its own account_changed_/detail_pending_ flags to abandon early.
+///
+/// A plain atomic, not a mutex: nothing blocks on this, it is purely advisory. A plugin that never
+/// checks it still works correctly, just competes for the DMA pool exactly as it did before this
+/// existed.
+std::atomic<bool>& largeTransferInProgress();
 
 struct HttpRequest {
     /// Must be https://. Plain http:// is rejected rather than quietly downgraded.
