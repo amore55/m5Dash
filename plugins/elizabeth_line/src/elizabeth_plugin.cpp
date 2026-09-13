@@ -272,6 +272,16 @@ void ElizabethPlugin::selectJourney(Journey journey) {
     if (requested_journey_valid_ && requested_journey_ == journey) {
         return;  // already showing this board; nothing to fetch.
     }
+    // A fetch already in flight (the routine refresh, or a previous press) means refresh() below
+    // would be a silent no-op — see fetchInFlight()'s own comment. Marking this "requested"
+    // regardless was the actual bug reported live: the button highlight changed, but with a
+    // previous fetch still running the board itself never updated, because onTick() then believed
+    // this direction had already been asked for and never retried it. Leaving requested_journey_
+    // untouched here means the mismatch persists and onTick() picks it up the moment the worker
+    // frees up, instead of the request being dropped for good.
+    if (fetchInFlight()) {
+        return;
+    }
     ESP_LOGI(kTag, "board set by hand: %s to %s", journeyOrigin(journey),
              journeyDestination(journey));
     requested_journey_ = journey;
@@ -651,6 +661,13 @@ void ElizabethPlugin::onTick() {
         requested_journey_ = wanted;
         requested_journey_valid_ = true;
     } else if (wanted != requested_journey_) {
+        // Same reasoning as selectJourney()'s own check: don't mark this direction "requested"
+        // while a fetch is already in flight, or refresh() below silently drops it and nothing
+        // would ever retry — leave the mismatch standing so the next tick tries again once the
+        // worker is free.
+        if (fetchInFlight()) {
+            return;
+        }
         ESP_LOGI(kTag, "board turning round: now showing %s to %s", journeyOrigin(wanted),
                  journeyDestination(wanted));
         requested_journey_ = wanted;

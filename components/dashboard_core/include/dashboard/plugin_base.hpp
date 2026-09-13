@@ -143,6 +143,18 @@ class PluginBase : public DashboardPlugin {
 
     bool workerBusy() const { return worker_.busy(); }
 
+    /// True exactly when refresh(), called right now, would be a silent no-op — a fetch already
+    /// posted (running or still queued) with nothing yet having cleared it. Different from
+    /// workerBusy(): that is false in the narrow window between refresh() posting a job and the
+    /// worker task actually picking it up, which this is not.
+    ///
+    /// For a subclass whose own bookkeeping (a "what did I last ask for" flag, say) needs to know
+    /// whether a refresh() call actually took effect rather than assuming it did — see
+    /// ElizabethPlugin::selectJourney()'s own use of this for why assuming is a real bug: a
+    /// direction change requested while a previous fetch was still in flight was silently
+    /// dropped, and the plugin's own "already requested" bookkeeping had no way to notice.
+    bool fetchInFlight() const { return fetch_in_flight_.load(std::memory_order_relaxed); }
+
   private:
     void runFetch(bool force);
     void refreshFooter();
