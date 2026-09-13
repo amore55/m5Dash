@@ -54,13 +54,22 @@ const char* toString(OtaState state) {
 }
 
 esp_err_t OtaService::start() {
-    // 8 KB, the project default (see plugin_base.hpp's own workerStackBytes()) — not the 16 KB
-    // this originally guessed at. Nothing in this file keeps a large buffer on the stack: the
-    // manifest and the streamed download both live in PSRAM (ResponseBuffer / streamGet's
-    // sink), and the largest stack-resident locals are a mbedtls_sha256_context and a handful of
-    // short strings. Right-sized down from 16 KB after adding Telegram/tasks made internal SRAM
-    // tight enough to reproduce docs/BACKLOG.md §1.3's boot-time crash again — see that entry.
-    return worker_.start("ota", 8192);
+    // 16 KB, not the project default 8 KB (see plugin_base.hpp's own workerStackBytes()) this
+    // was right-sized down to on 30 August on the reasoning that the manifest and the streamed
+    // download both live in PSRAM and the largest stack-resident locals are a
+    // mbedtls_sha256_context and a handful of short strings. That reasoning missed
+    // attemptStreamGet()'s own `chunk[kStreamChunkBytes]` — a 4 KB stack buffer, in
+    // https_client.cpp, that this task calls into for every downloaded chunk — and the whole
+    // download/verify/apply path had never actually been exercised end to end to catch it: every
+    // session up to and including 12 September's redirect-following fix only ever got as far as
+    // fetchManifest() before some other bug stopped it first. The very first real install this
+    // project ever ran, on 12 September once the redirect fix let one proceed, overflowed this
+    // stack by 52 bytes (`Stack protection fault`, task "ota", SP 0x34 below the guard) partway
+    // through the download. Restored to 16 KB rather than trimmed to a measured minimum, because
+    // the actual peak (header parsing depth, TLS call stack, `chunk` all at once) has now been
+    // shown once to exceed 8 KB and has still never been measured directly — reduce this again
+    // only after that measurement exists, not on the same kind of reasoning that missed it.
+    return worker_.start("ota", 16384);
 }
 
 void OtaService::setProgress(const OtaProgress& progress) {
