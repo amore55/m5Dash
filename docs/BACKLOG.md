@@ -321,17 +321,22 @@ trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
    12 September 2026, part 2". Two real bugs, both in this project's own code: a
    `MediumString`/`UrlString` truncation of the manifest URL, and `esp_http_client_get_header()`
    being structurally incapable of reading a response's Location header.
-2. **OTA install has now been attempted for real twice, and found two further genuine bugs — see
-   "Session of 13 September 2026" for the full account.** Both fixed by reasoning, neither yet
-   confirmed by a completed install: the OTA worker's stack (restored 8 KB → 16 KB, after a real
-   overflow) and `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` (raised again, 65536 → 98304, after a
-   real DMA-buffer exhaustion in the Wi-Fi SDIO driver during a sustained multi-second download).
-   **Next action: attempt a full install again against a genuinely newer release, watching the
-   `health:` log's `dma` figure throughout the whole download this time, not just at the start and
-   end** — if 98304 is still not enough under this sustained-download load, the next lever to pull
-   is not a third guess at a bigger number, but actually plotting `dma`/`internal` across the whole
-   download to see whether it is fragmenting, exhausting, or growing over time, the same
-   discipline §1.3's earlier entries used before trusting a number.
+2. **OTA install still does not complete — five real attempts, five crashes, root-caused but not
+   yet fixed. See "Session of 13 September 2026" for the full account, continued after its own
+   "Confirmed safe throughout" paragraph.** The OTA worker's own stack overflow IS fixed (8 KB →
+   16 KB) and stayed fixed. The remaining crash is a DMA-pool fragmentation inside a THIRD-PARTY
+   component (`managed_components/espressif__esp_hosted`'s SDIO driver, RX_STREAMING_MODE's
+   `sdio_rx_get_buffer()`, a raw variable-sized alloc/free that never shrinks) — not this
+   project's own code. Three `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` increases in a row (65536 →
+   98304 → 163840) each only delayed the identical crash by a similar margin; a targeted Kconfig
+   fix for the actual mechanism (`RX_MAX_SIZE` mode) DID stop the crash but broke basic network
+   reachability outright and was reverted. Current tree: 163840, `net::largeTransferInProgress()`
+   (GitHub's own background polling backing off during OTA) both in place, `RX_STREAMING_MODE`
+   restored. **This exact combination has never actually been tried together** — the SDIO-mode
+   detour happened before it could be. **Next action: attempt one more full install on the current
+   tree before assuming it still fails.** If it does, this needs either reporting upstream to
+   Espressif with the evidence already gathered, or accepting OTA install as unreliable under a
+   real download for now.
 3. **Once install completes once**, confirm the device reboots into the new version and *stays
    up* (`confirmBootIfPending()` actually exercised for the first time), then treat
    `ota_automatic_install` as still-untrusted until that has also been seen to work.
@@ -892,6 +897,60 @@ stale-file mix-up cost two extra release cycles and was entirely self-inflicted,
 already-valid partition — exactly the safety property `ota_service.hpp`'s own header comment
 promises. Worth saying plainly since two crashes in one session could otherwise read as "OTA is
 unsafe" rather than "OTA's failure-before-commit design worked exactly as intended, twice."
+
+**Crash two turned out to need four more attempts before its real mechanism was understood, and
+is still not fixed.** In order:
+
+1. `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` 65536 → 98304 (above): crashed again, same place,
+   same symptom, only slightly later.
+2. Found a genuine SECOND contributing bug via direct evidence, not guessing: a 3-minute idle
+   watch with no OTA running proved GitHub's own background poll (its `fetch()` does up to
+   fourteen sequential per-repository requests in ONE already-running call) does NOT crash on its
+   own, but three real install attempts all showed a burst of GitHub TLS handshakes landing
+   within seconds of the crash. Two fixes, at two different layers, because the first alone did
+   not work: `PageManager::setRefreshSuppressor()` stops NEW plugin refreshes being scheduled
+   while OTA is busy, but GitHub's loop was already running when OTA started and nothing checked
+   PageManager mid-loop — so `net::largeTransferInProgress()` was added, a plain flag any
+   already-running loop can poll between its own iterations, which GitHub's now does. **Crashed a
+   fourth time anyway.**
+3. With GitHub confirmed no longer contending, OtaService's own temporary per-128KB diagnostic
+   (`heap_caps_get_free_size`/`largest_free_block(MALLOC_CAP_DMA)`, logged from inside the
+   download's own sink) caught it directly: `free=5695 largest=2432` bytes, 128 KB into a 2 MB
+   image, ~100 ms before the identical crash. Genuine fragmentation, not other-plugin contention.
+   `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` raised again, 98304 → 163840 (a much bigger jump than
+   either previous doubling). **Crashed a fifth time, same 128 KB checkpoint, only marginally
+   more free memory measured (`free=7623 largest=3328`).** Three increases in one session, each
+   only delaying the identical failure by a similar margin, is itself the finding: pool SIZE is
+   not the lever that fixes this.
+4. Read the actual allocation path in `managed_components/espressif__esp_hosted/host/drivers/
+   transport/sdio/sdio_drv.c` (a THIRD-PARTY component, not this project's own code) rather than
+   guess again. In the RX_STREAMING_MODE this project has always used,
+   `sdio_rx_get_buffer()`'s "double buffer" is a raw, VARIABLE-sized `MEM_ALLOC`/`free` that grows
+   (never shrinks) whenever an incoming chunk needs more room than the last one, freeing the old
+   buffer first — the textbook alloc-different-sizes-and-free churn that fragments a shared pool,
+   and never in this project's own code to begin with. Tried switching to
+   `CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_MAX_SIZE` (fixed 512×3-byte reads, no growth, at the
+   Kconfig-documented cost of one extra SDIO transaction per read). **This did stop the DMA crash
+   — but broke something more fundamental first**: within about a minute of flashing, the device
+   kept reporting itself connected in its own serial log while becoming completely unpingable and
+   unreachable over HTTP from another machine on the same Wi-Fi. Reverted immediately, back to
+   `RX_STREAMING_MODE`, confirmed reachable again. **Do not retry `RX_MAX_SIZE` without first
+   understanding why it broke reachability** — see `sdkconfig.defaults`' own comment at that
+   symbol.
+
+**Where this leaves things**: the manifest check (§ above) is solid and confirmed. OTA install can
+now genuinely run a real download (it could not before this session at all) but reliably crashes
+partway through one, root-caused to a specific, third-party allocation pattern inside
+`esp_hosted`'s SDIO driver rather than anything in this project's own code — and the one targeted
+fix for that pattern broke basic connectivity, which is a worse failure than the one it was
+chasing. `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` is left at 163840 (not proven sufficient, but not
+disproven either — it was never tested in isolation once GitHub's contention was also fixed,
+since the SDIO-mode side-quest intervened first). **Next time**: re-attempt a full install on the
+CURRENT tree (163840, GitHub back-off, streaming mode) before assuming that combination still
+fails — it has not actually been tried together. If it still fails, the honest options are (a)
+report this upstream to Espressif as an `esp_hosted` SDIO-streaming-mode fragmentation bug with
+the exact evidence gathered here, or (b) accept OTA install as unreliable under a real download
+for now and revisit with fresh eyes, rather than continuing to guess at more Kconfig knobs blind.
 
 ### A wanted feature, captured before it is forgotten
 
