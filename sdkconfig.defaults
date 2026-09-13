@@ -174,14 +174,20 @@ CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
 # `esp_dma_capable_malloc(): Not enough heap memory` followed by `assert failed:
 # sdio_rx_get_buffer` — the ESP32-C6 Wi-Fi co-processor's own SDIO receive path failing to get a
 # DMA-capable buffer for an incoming packet, crashing Core 0 directly (not the OTA task's stack —
-# a different failure from the same day's other OTA crash). This is a heavier, longer-sustained
-# load than anything that exercised the 65536 figure: a multi-megabyte download held open for tens
-# of seconds, continuously receiving over Wi-Fi, with `tlsGate()` only serialising OTHER plugins'
-# own TLS handshakes — it does nothing to reduce the SDIO layer's own DMA-buffer appetite for the
-# download's sustained inbound traffic itself. Not yet proven sufficient by the same standard of
-# evidence §1.3's earlier entries used (a full install has not yet completed) — see docs/BACKLOG.md
-# for the next measurement to make before trusting this figure the way 65536 was trusted.
-CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=98304
+# a different failure from the same day's other OTA crash).
+#
+# 98304 was NOT enough. Once other plugins' own background polling was also confirmed and fixed
+# as a contributing factor (net::largeTransferInProgress(), same day), a direct measurement of
+# heap_caps_get_free_size/largest_free_block(MALLOC_CAP_DMA) taken every 128 KB through a real
+# download (OtaService's own temporary diagnostic logging) showed the pool already down to
+# free=5695 largest=2432 bytes at just 128 KB into a 2 MB image — genuine fragmentation, the same
+# §1.3 mechanism, but worse under a long SUSTAINED receive than any earlier measurement exercised
+# (every prior figure here was validated against brief, individual handshakes, never a multi-
+# second continuous stream). Raised again, 98304 -> 163840, a much larger jump than the previous
+# doublings, specifically to be re-measured with the SAME per-128KB diagnostic across a WHOLE
+# download rather than assumed sufficient from a boot-time or single-fetch test. Do not trust this
+# figure until that full-download measurement exists — see docs/BACKLOG.md.
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=163840
 
 # ---------------------------------------------------------------------------------------
 # HTTP client / server
