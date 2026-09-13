@@ -247,7 +247,17 @@ CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
 CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
 CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15
 CONFIG_ESP_HOSTED_SDIO_RESET_ACTIVE_LOW=y
-CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
+# Switched from RX_STREAMING_MODE (the component's own default) to RX_MAX_SIZE on 13 September,
+# chasing the DMA-pool crash logged just above (§1.3, and its own OTA-download entries): reading
+# esp_hosted's own host/drivers/transport/sdio/sdio_drv.c showed that streaming mode's
+# sdio_rx_get_buffer() allocates its receive buffer with a raw, VARIABLE-sized MEM_ALLOC/free —
+# growing (never shrinking) whenever an incoming chunk needs more room than the last one, freeing
+# the old buffer first — exactly the alloc-different-sizes-and-free churn pattern that fragments a
+# DMA-capable pool. RX_MAX_SIZE instead always reads a fixed 512*3-byte block, at the cost of one
+# extra SDIO transaction per read (asking the slave for the exact size first) — this trades a
+# little Wi-Fi throughput for buffers that never need to grow or be freed-and-reallocated. Not yet
+# proven sufficient by an actual completed OTA install — see docs/BACKLOG.md.
+CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_MAX_SIZE=y
 CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
 
 # ---------------------------------------------------------------------------------------
