@@ -547,6 +547,13 @@ void PageManager::applyPendingOnlineState() {
 }
 
 void PageManager::scheduleRefreshes() {
+    // See setRefreshSuppressor()'s own comment: an in-progress OTA download holds this true, and
+    // every plugin — including one whose interval has already elapsed — simply waits its turn
+    // rather than starting a fresh TLS handshake alongside it.
+    if (refresh_suppressor_ && refresh_suppressor_()) {
+        return;
+    }
+
     // First pass: give one not-yet-refreshed plugin a turn per tick. Staggering the initial
     // fetches by 250 ms each stops five TLS handshakes from starting simultaneously at boot,
     // which would spike heap use and delay the first paint.

@@ -914,6 +914,12 @@ extern "C" void app_main(void) {
         // re-apply them later without a restart.
         g_pages.setConfigurationLoader(&applyPageConfiguration);
 
+        // See PageManager::setRefreshSuppressor()'s own comment — an OTA download crashed twice
+        // on 13 September from ordinary background polling (GitHub's own multi-repo check)
+        // landing concurrently with it, exhausting the shared DMA-capable pool. OTA is rare and
+        // user-initiated; every other plugin waiting out its download is a trade nobody notices.
+        g_pages.setRefreshSuppressor([]() { return g_ota.busy(); });
+
         // The GitHub filter is a button on the page AND a stored setting. Without this the button
         // worked and the choice silently reverted on every boot.
         g_github.setFilterPersister([](bool show_work) {

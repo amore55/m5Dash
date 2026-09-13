@@ -66,6 +66,27 @@ class PageManager : public PageHost {
         config_loader_ = std::move(loader);
     }
 
+    /// Supplied by the application: while this returns true, no plugin's refresh() is scheduled
+    /// — not even a plugin whose own interval has elapsed. Kept as a callback, not a dependency
+    /// on dashboard_ota directly, for the same layering reason as the loader above.
+    ///
+    /// Exists specifically for an in-progress OTA download: found 13 September, live on device,
+    /// that a plugin's own ordinary background poll (GitHub's, checking several repositories in
+    /// a tight sequential loop, each its own fresh TLS handshake) landing DURING an OTA download
+    /// was enough to exhaust the DMA-capable internal-SRAM pool and crash the Wi-Fi co-processor's
+    /// SDIO driver — confirmed NOT reproducible from that same background polling alone (a
+    /// three-minute idle watch, no OTA running, saw the identical GitHub poll complete with no
+    /// crash). `HttpsClient`'s own `tlsGate()` only serialises actual TLS handshake attempts
+    /// against each other; it does nothing to stop several of them from being individually
+    /// attempted in quick succession while OTA's own download is also live, and each handshake's
+    /// hardware-crypto DMA churn (see docs/BACKLOG.md §1.3) adds up. Pausing every plugin's own
+    /// polling for the (rare, user-initiated, at most a few minutes) duration of an OTA download
+    /// is a trade nobody will notice and removes the contention entirely, rather than trying to
+    /// out-guess how large a burst the DMA pool needs to survive.
+    void setRefreshSuppressor(std::function<bool()> is_busy) {
+        refresh_suppressor_ = std::move(is_busy);
+    }
+
     // ---- navigation -------------------------------------------------------------------
     void next();
     void previous();
@@ -144,6 +165,7 @@ class PageManager : public PageHost {
     const char* overlay_page_id_ = nullptr;
     const char* home_page_id_ = nullptr;
     std::function<void()> config_loader_;
+    std::function<bool()> refresh_suppressor_;
 
     lv_obj_t* screen_ = nullptr;
     lv_timer_t* tick_timer_ = nullptr;

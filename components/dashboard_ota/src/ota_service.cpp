@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "mbedtls/sha256.h"
@@ -287,6 +288,22 @@ void OtaService::doInstall(UrlString manifest_url, ShortString channel) {
         }
         mbedtls_sha256_update(&sha_ctx, data, len);
         bytes_written += len;
+
+        // TEMPORARY, 13 September: two crashes in a row during a real download have both been a
+        // DMA-capable allocation failing somewhere below this call (the Wi-Fi SDIO driver's own
+        // receive-buffer request, not this file's own code) — see docs/BACKLOG.md's "Pick up
+        // here". Doubling CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL didn't stop it, so the next step
+        // is measuring the actual trend through a whole download instead of guessing another
+        // number. Logged every 128 KB (~16 points across a 2 MB image) rather than every 4 KB
+        // chunk, to see the shape of the curve without flooding the log.
+        if ((bytes_written / (128 * 1024)) != ((bytes_written - len) / (128 * 1024))) {
+            ESP_LOGW(kTag, "dma: free=%u largest=%u, internal: free=%u largest=%u, at %u/%u bytes",
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_DMA)),
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_DMA)),
+                     static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                     static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+                     static_cast<unsigned>(bytes_written), static_cast<unsigned>(manifest.size));
+        }
 
         // Cheap enough to do on every chunk: setProgress() is a mutex lock and a struct copy,
         // not an allocation, and a settings page polling this wants to see the bar move.
