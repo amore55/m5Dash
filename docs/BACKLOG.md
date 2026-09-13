@@ -345,10 +345,10 @@ trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
 
 **Also noted by the owner, 13 September, while waiting on the OTA install test below:**
 
-3. **Show the running firmware version on the home/summary screen, bottom right.** Not currently
-   displayed anywhere on-device — `dash::kAppVersion` exists and is already what the settings page
-   and OTA manifest comparison use, so this is a display-only addition to the summary page, not new
-   plumbing.
+~~Show the running firmware version on the home/summary screen, bottom right.~~ **Done, same
+session**: `SummaryPlugin::buildBody()` now shows `v` + `dash::kAppVersion`, bottom right, confirmed
+on device.
+
 4. **The Elizabeth line page's top-right buttons for swapping direction (Abbey Wood ↔ Liverpool
    Street) do nothing when tapped** — confirmed by the owner clicking them live, no visible change.
    Not yet investigated: could be a touch-target/hit-area bug, a handler never wired up, or state
