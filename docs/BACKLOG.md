@@ -349,11 +349,15 @@ trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
 session**: `SummaryPlugin::buildBody()` now shows `v` + `dash::kAppVersion`, bottom right, confirmed
 on device.
 
-4. **The Elizabeth line page's top-right buttons for swapping direction (Abbey Wood ↔ Liverpool
-   Street) do nothing when tapped** — confirmed by the owner clicking them live, no visible change.
-   Not yet investigated: could be a touch-target/hit-area bug, a handler never wired up, or state
-   that updates but doesn't trigger a redraw. Look at `elizabeth_plugin.cpp`'s page/gesture handling
-   for whatever renders those two buttons.
+~~The Elizabeth line page's top-right buttons for swapping direction do nothing when tapped.~~
+**Done, same session.** Not a touch/handler bug — the button highlight was always changing
+correctly; the departure board just never followed it. Root cause: `PluginBase::refresh()`
+silently no-ops when a fetch is already in flight, but `selectJourney()`/`onTick()` both marked the
+new direction as "requested" regardless, so a click landing mid-fetch was dropped and nothing ever
+retried it. Fixed with a new `PluginBase::fetchInFlight()` accessor both call sites now check
+before updating their bookkeeping. Confirmed on device: a press now reliably lands on the correct
+board once the in-flight fetch clears (can still take up to ~30–50 s if another fetch was already
+running — that part is real network/queue latency, not a bug, and not what was reported).
 
 **Then, three smaller things left over from the 24 August session:**
 
