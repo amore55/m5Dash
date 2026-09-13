@@ -6,6 +6,7 @@
 
 #include "app_config.hpp"
 #include "dashboard/theme.hpp"
+#include "version.hpp"
 
 namespace plugins {
 namespace {
@@ -106,6 +107,15 @@ void SummaryPlugin::buildBody(lv_obj_t* body) {
             addRowFiller(row);
         }
     }
+
+    // The running firmware version, bottom right — the one place on the device that shows it at
+    // all. Last child in this COLUMN-flow body, so it naturally sits below every tile row without
+    // fighting the flex layout for a fixed position; full width with right-aligned text does the
+    // rest. Small and muted deliberately: this is a reference mark for support, not a headline.
+    lv_obj_t* version = theme::makeLabel(body, "", theme::fontLabel(), theme::textMuted());
+    lv_label_set_text_fmt(version, "v%s", dash::kAppVersion);
+    lv_obj_set_width(version, LV_PCT(100));
+    lv_obj_set_style_text_align(version, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
 }
 
 void SummaryPlugin::buildTile(lv_obj_t* parent, Tile& tile) {
