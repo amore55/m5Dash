@@ -315,23 +315,38 @@ trying it), the streamed SHA-256 verification, or `esp_ota_set_boot_partition` +
 
 ### Pick up here
 
-**Most urgent, from 12 September:**
+**Most urgent, from 13 September:**
 
-1. **§1.3 is now measurably much better, via `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` doubled to
-   65536** — see §1.3's fourth entry. Zero crashes across four cold boots, a 92-second continuous
-   run, and a live OTA manifest check, with the `health:` log's `dma` figure holding at 14–22 KB
-   against the 1.5–8 KB range that reliably crashed before. Genuinely good evidence, not proof it
-   can never recur — keep watching the `dma` figure, and treat an unexplained reboot as reason to
-   re-open this rather than assume it is unrelated to §1.3.
-2. **OTA's manifest check is now genuinely fixed and confirmed on device** — see "Session of 12
-   September 2026, part 2" below for the full account. Two real bugs, both in this project's own
-   code: a `MediumString`/`UrlString` truncation of the manifest URL, and
-   `esp_http_client_get_header()` being structurally incapable of reading a response's Location
-   header (the redirect-following code needed rewriting to use
-   `esp_http_client_set_redirection()` instead). **What remains is install itself** — download,
-   SHA-256 verify, flash, reboot, `confirmBootIfPending()` — never yet exercised end to end on
-   this project. Needs a genuinely newer release (e.g. `v0.1.2`) to test against, since `v0.1.1`
-   is both the running version and the one the current manifest points to.
+1. **OTA's manifest check is fixed and confirmed working end to end on device** — see "Session of
+   12 September 2026, part 2". Two real bugs, both in this project's own code: a
+   `MediumString`/`UrlString` truncation of the manifest URL, and `esp_http_client_get_header()`
+   being structurally incapable of reading a response's Location header.
+2. **OTA install has now been attempted for real twice, and found two further genuine bugs — see
+   "Session of 13 September 2026" for the full account.** Both fixed by reasoning, neither yet
+   confirmed by a completed install: the OTA worker's stack (restored 8 KB → 16 KB, after a real
+   overflow) and `CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` (raised again, 65536 → 98304, after a
+   real DMA-buffer exhaustion in the Wi-Fi SDIO driver during a sustained multi-second download).
+   **Next action: attempt a full install again against a genuinely newer release, watching the
+   `health:` log's `dma` figure throughout the whole download this time, not just at the start and
+   end** — if 98304 is still not enough under this sustained-download load, the next lever to pull
+   is not a third guess at a bigger number, but actually plotting `dma`/`internal` across the whole
+   download to see whether it is fragmenting, exhausting, or growing over time, the same
+   discipline §1.3's earlier entries used before trusting a number.
+3. **Once install completes once**, confirm the device reboots into the new version and *stays
+   up* (`confirmBootIfPending()` actually exercised for the first time), then treat
+   `ota_automatic_install` as still-untrusted until that has also been seen to work.
+
+**Also noted by the owner, 13 September, while waiting on the OTA install test below:**
+
+3. **Show the running firmware version on the home/summary screen, bottom right.** Not currently
+   displayed anywhere on-device — `dash::kAppVersion` exists and is already what the settings page
+   and OTA manifest comparison use, so this is a display-only addition to the summary page, not new
+   plumbing.
+4. **The Elizabeth line page's top-right buttons for swapping direction (Abbey Wood ↔ Liverpool
+   Street) do nothing when tapped** — confirmed by the owner clicking them live, no visible change.
+   Not yet investigated: could be a touch-target/hit-area bug, a handler never wired up, or state
+   that updates but doesn't trigger a redraw. Look at `elizabeth_plugin.cpp`'s page/gesture handling
+   for whatever renders those two buttons.
 
 **Then, three smaller things left over from the 24 August session:**
 
@@ -829,6 +844,54 @@ wrong, and the tell was that the *symptom* (no Location, or a 404) survived a ch
 have fixed it if the theory were true (switching hosts, in this case). When a fix doesn't fix it,
 suspect the mechanism, not just the target — reading the actual library source settled in minutes
 what two rounds of external-cause theorising had not.
+
+### Session of 13 September 2026 — the first two real OTA install attempts, and the two new crashes they found
+
+**With the redirect fix in place, "Install update" finally ran far enough to reach real code that
+had never executed on this project before** — and found two more genuine bugs in quick succession,
+each a first-of-its-kind failure because nothing before this session ever downloaded a real image.
+
+**Crash one: the OTA worker task's own 8 KB stack overflowed 52 bytes past the guard**
+(`Guru Meditation Error: Core 1 panic'ed (Stack protection fault)`, task `ota`), partway through
+the download. 8 KB was chosen 30 August on the reasoning that the manifest and the download both
+live in PSRAM and the largest stack locals are a `mbedtls_sha256_context` and some short strings —
+missing that `attemptStreamGet()`'s own `chunk[kStreamChunkBytes]` (4 KB) read buffer, in
+`https_client.cpp`, runs on this exact task's stack too, on every chunk. That reasoning was never
+checked against a real download, because nothing had gotten that far before. **Fixed**: OTA's
+worker stack restored to 16 KB (`OtaService::start()`).
+
+**Crash two, found on the very next attempt once crash one was fixed: a genuine DMA-pool
+exhaustion, not the OTA task's stack this time.** `esp_dma_capable_malloc(): Not enough heap
+memory` followed by `assert failed: sdio_rx_get_buffer sdio_drv.c:670`, in Core 0 — the ESP32-C6
+Wi-Fi co-processor's own SDIO receive path failing to get a DMA-capable buffer for an *incoming*
+packet, roughly 26 seconds into a sustained ~2 MB download. This is §1.3's mechanism again
+(the shared `SPIRAM_MALLOC_RESERVE_INTERNAL` pool), but under a genuinely new kind of load: every
+previous §1.3 measurement was against brief, individual plugin fetches, never a single transfer
+held open continuously for tens of seconds. `tlsGate()` (see `https_client.hpp`) only serialises
+OTHER plugins' own TLS handshakes against each other and against OTA's — it does nothing to reduce
+the SDIO layer's own DMA-buffer appetite for sustained inbound Wi-Fi traffic during a download
+that is, by design, allowed to run alongside everything else. **First response**:
+`CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL` raised again, 65536 → 98304 — same lever as §1.3's fourth
+entry, not yet validated by a full successful install (see "Pick up here").
+
+**A three-way version juggling exercise, worth remembering the shape of if this happens again.**
+Testing install needs the device to be running a version OLDER than what the manifest advertises,
+so every fix in this project's OTA client code needs its OWN "already installed" build (serial-
+flashed) plus a separate, genuinely newer "install target" build (an actual GitHub release) to
+prove anything against. That produced `v0.1.3` (redirect fix + stack fix, serial-flashed baseline,
+never published as a release) → `v0.1.4` (a content-free version bump, published, but the
+`manifest.json` asset was accidentally uploaded as a stale copy of `v0.1.2`'s — same filename,
+picked from the wrong folder) → `v0.1.5` (replaced v0.1.4 outright rather than fight the mixed-up
+asset; this is what actually got as far as crash two). **Lesson for next time: write each
+version's `manifest.json` to ONE unambiguous location (this session settled on the Downloads
+folder) and delete every other same-named copy on disk before asking for it to be uploaded** — the
+stale-file mix-up cost two extra release cycles and was entirely self-inflicted, not a code bug.
+
+**Confirmed safe throughout: the device never applied a bad image.** Both crashes happened before
+`esp_ota_set_boot_partition()` is ever reached, so every reboot landed back on the already-running,
+already-valid partition — exactly the safety property `ota_service.hpp`'s own header comment
+promises. Worth saying plainly since two crashes in one session could otherwise read as "OTA is
+unsafe" rather than "OTA's failure-before-commit design worked exactly as intended, twice."
 
 ### A wanted feature, captured before it is forgotten
 
